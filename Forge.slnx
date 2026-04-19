@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Forge.Api/Forge.Api.csproj" />
+    <Project Path="src/Forge.Core/Forge.Core.csproj" />
+    <Project Path="src/Forge.Storage/Forge.Storage.csproj" />
+  </Folder>
+</Solution>
