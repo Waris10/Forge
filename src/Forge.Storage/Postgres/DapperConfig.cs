@@ -1,5 +1,4 @@
-﻿using System.Data;
-using Dapper;
+﻿using Dapper;
 
 namespace Forge.Storage.Postgres;
 

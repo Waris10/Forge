@@ -17,11 +17,24 @@ namespace Forge.Storage.Redis;
 public interface IJobQueue
 {
     /// <summary>
-    /// Push a job id onto the ready queue. The producer calls this immediately
-    /// after inserting the Postgres row. Idempotent at the Redis layer: pushing
-    /// the same id twice means the job runs twice (at-least-once semantics).
+    /// Push a job id onto the ready queue, and write a per-job metadata hash
+    /// at <c>forge:job:{id}</c> capturing the queue name. The hash is what
+    /// lets the scheduler's Lua promotion script know which queue to LPUSH
+    /// the job back onto when its scheduled time arrives.
+    ///
+    /// Idempotent at the Redis layer: pushing the same id twice means the
+    /// job runs twice (at-least-once semantics).
     /// </summary>
     Task Enqueue(string queueName, Guid jobId, CancellationToken ct);
+
+
+    /// <summary>
+    /// Push a job onto the scheduled zset with score = unix-ms of <paramref name="runAt"/>,
+    /// and write the per-job hash. Used by the API when a submission specifies
+    /// a delaySeconds value. The scheduler will promote this job to its ready
+    /// queue when <paramref name="runAt"/> arrives.
+    /// </summary>
+    Task Schedule(string queueName, Guid jobId, DateTimeOffset runAt, CancellationToken ct);
 
     /// <summary>
     /// Block-and-move: wait up to <paramref name="timeout"/> for a job in

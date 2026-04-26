@@ -1,8 +1,6 @@
-﻿using System.Threading.Channels;
-using Forge.Storage.Redis;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+﻿using Forge.Storage.Redis;
 using Microsoft.Extensions.Options;
+using System.Threading.Channels;
 
 namespace Forge.Worker;
 

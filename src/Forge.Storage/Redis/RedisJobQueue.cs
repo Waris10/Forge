@@ -12,6 +12,40 @@ namespace Forge.Storage.Redis;
 /// </summary>
 public class RedisJobQueue : IJobQueue
 {
+
+    /// <summary>
+    /// Atomically promotes due jobs from the scheduled zset back to their
+    /// ready queues. Single Redis operation — no client can interleave.
+    ///
+    /// KEYS[1] = forge:scheduled (the zset)
+    /// ARGV[1] = "now" in unix ms (passed in, not redis.call('TIME'),
+    ///           because TIME is not deterministic and would break replication)
+    /// ARGV[2] = batch size
+    /// ARGV[3] = key prefix for per-job hashes  ("forge:job:")
+    /// ARGV[4] = key prefix for queues          ("forge:queue:")
+    ///
+    /// Returns the number of jobs promoted.
+    ///
+    /// For each due job:
+    ///   1. Remove from the zset (no longer "scheduled").
+    ///   2. Look up its queue name from forge:job:{id}, default to "default".
+    ///   3. LPUSH onto forge:queue:{queue}.
+    ///
+    /// All inside one server-side script -> atomic.
+    /// </summary>
+    private const string PromoteDueJobsLua = """
+    local ids = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1], 'LIMIT', 0, ARGV[2])
+    for i, id in ipairs(ids) do
+      redis.call('ZREM', KEYS[1], id)
+      local q = redis.call('HGET', ARGV[3] .. id, 'queue')
+      if not q or q == false then
+        q = 'default'
+      end
+      redis.call('LPUSH', ARGV[4] .. q, id)
+    end
+    return #ids
+    """;
+
     private readonly IConnectionMultiplexer _redis;
 
     public RedisJobQueue(IConnectionMultiplexer redis)
@@ -22,10 +56,39 @@ public class RedisJobQueue : IJobQueue
     public async Task Enqueue(string queueName, Guid jobId, CancellationToken ct)
     {
         var db = _redis.GetDatabase();
-        // LPUSH = push onto the left (head) of the list. Workers pull from the
-        // right (tail) via BLMOVE, giving us FIFO. New jobs wait behind existing
-        // jobs, oldest job runs next.
-        await db.ListLeftPushAsync(RedisKeys.Queue(queueName), jobId.ToString());
+        var idStr = jobId.ToString();
+
+        // Two writes: per-job hash (so the scheduler can route on promote)
+        // and the LPUSH onto the ready queue. Pipelined into one RTT.
+        var batch = db.CreateBatch();
+        var hashTask = batch.HashSetAsync(
+            RedisKeys.Job(jobId),
+            new[] { new HashEntry("queue", queueName) });
+        var pushTask = batch.ListLeftPushAsync(RedisKeys.Queue(queueName), idStr);
+        batch.Execute();
+
+        await Task.WhenAll(hashTask, pushTask);
+    }
+
+
+    public async Task Schedule(
+    string queueName,
+    Guid jobId,
+    DateTimeOffset runAt,
+    CancellationToken ct)
+    {
+        var db = _redis.GetDatabase();
+        var idStr = jobId.ToString();
+        var score = runAt.ToUnixTimeMilliseconds();
+
+        var batch = db.CreateBatch();
+        var hashTask = batch.HashSetAsync(
+            RedisKeys.Job(jobId),
+            new[] { new HashEntry("queue", queueName) });
+        var addTask = batch.SortedSetAddAsync(RedisKeys.Scheduled, idStr, score);
+        batch.Execute();
+
+        await Task.WhenAll(hashTask, addTask);
     }
 
     public async Task<Guid?> BlockingPull(
@@ -123,44 +186,24 @@ public class RedisJobQueue : IJobQueue
     {
         var db = _redis.GetDatabase();
 
-        // Use Redis's clock, not the worker's. Cheap (single RTT) and avoids
-        // surprises when worker clocks drift.
+        // Use Redis's clock as the source of truth, pass it in as ARGV.
         var serverTime = await db.ExecuteAsync("TIME");
-        // TIME returns [seconds, microseconds]; we want milliseconds.
         var parts = (RedisResult[])serverTime!;
         var nowMs = (long.Parse((string)parts[0]!) * 1000)
                   + (long.Parse((string)parts[1]!) / 1000);
 
-        // Find up to `batch` job ids whose scheduled time has arrived.
-        var due = await db.SortedSetRangeByScoreAsync(
-            key: RedisKeys.Scheduled,
-            start: 0,
-            stop: nowMs,
-            order: Order.Ascending,
-            take: batch);
+        var result = await db.ScriptEvaluateAsync(
+            PromoteDueJobsLua,
+            keys: new RedisKey[] { RedisKeys.Scheduled },
+            values: new RedisValue[]
+            {
+            nowMs,
+            batch,
+            "forge:job:",
+            "forge:queue:"
+            });
 
-        if (due.Length == 0) return 0;
-
-        // For each due id: remove from the zset, push onto the ready queue.
-        // We don't currently track per-job queue routing in Redis (the spec's
-        // Lua script stores it in a per-job hash; we'll add that in M4 when
-        // we move to Lua). For now, every promoted job goes to "default".
-        //
-        // This is a known M3 simplification. The promoted jobs lose any custom
-        // queue assignment until M4. In practice we only have "default" anyway.
-        var queueKey = RedisKeys.Queue("default");
-
-        var b = db.CreateBatch();
-        var tasks = new List<Task>(due.Length * 2);
-        foreach (var id in due)
-        {
-            tasks.Add(b.SortedSetRemoveAsync(RedisKeys.Scheduled, id));
-            tasks.Add(b.ListLeftPushAsync(queueKey, id));
-        }
-        b.Execute();
-
-        await Task.WhenAll(tasks);
-
-        return due.Length;
+        // The script returns an integer count.
+        return (int)(long)result;
     }
 }

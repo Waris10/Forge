@@ -2,8 +2,6 @@
 using Forge.Storage.Postgres;
 using Forge.Storage.Redis;
 using Forge.Worker.Handlers;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Diagnostics;
 using System.Threading.Channels;

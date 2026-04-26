@@ -28,6 +28,15 @@ public static class RedisKeys
     /// <summary>The per-worker processing list. Jobs live here while executing.</summary>
     public static string Processing(string workerId) => $"{Prefix}:processing:{workerId}";
 
+    /// <summary>
+    /// Per-job metadata hash, e.g. forge:job:{guid}. Stores at minimum the
+    /// "queue" field, so the scheduler's Lua script can route a promoted job
+    /// back to its original queue. Other fields can be added later (priority,
+    /// idempotency_key, etc.) without breaking anyone — Redis hashes are
+    /// schemaless.
+    /// </summary>
+    public static string Job(Guid jobId) => $"forge:job:{jobId}";
+
     /// <summary>The sorted set of scheduled/delayed jobs, scored by unix ms.</summary>
     public static string Scheduled => $"{Prefix}:scheduled";
 

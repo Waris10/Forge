@@ -80,9 +80,11 @@ app.MapPost("/jobs", async (
     //     could be extended to sweep for such orphans.
     await repo.Insert(job, ct);
 
-    // Scheduled jobs will go through a different path (ZADD) in Milestone 4.
-    // For Milestone 2, we only handle the immediate-execution case.
-    if (job.ScheduledFor is null)
+    if (job.ScheduledFor is { } runAt) //Means if Schedule is not null then access it via the .Value prop capture it value into runAt
+    {
+        await queue.Schedule(job.Queue, job.Id, runAt, ct);
+    }
+    else
     {
         await queue.Enqueue(job.Queue, job.Id, ct);
     }
