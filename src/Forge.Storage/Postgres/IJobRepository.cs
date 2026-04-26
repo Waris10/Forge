@@ -23,4 +23,22 @@ public interface IJobRepository
     /// Used by POST /jobs to make repeat submissions idempotent.
     /// </summary>
     Task<Job?> FindByIdempotencyKey(string key, CancellationToken ct);
+
+    /// <summary>
+    /// Mark a job as running and stamp <c>started_at</c>. Increments <c>attempts</c>.
+    /// Called by the executor immediately before invoking the handler.
+    /// </summary>
+    Task MarkRunning(Guid id, CancellationToken ct);
+
+    /// <summary>
+    /// Mark a job as succeeded and stamp <c>completed_at</c> + <c>duration_ms</c>.
+    /// Called after the handler returns without throwing.
+    /// </summary>
+    Task MarkSucceeded(Guid id, int durationMs, CancellationToken ct);
+
+    /// <summary>
+    /// Mark a job as failed (terminal in M2 — replaced by retry logic in M3).
+    /// Stores <c>last_error</c> and stamps <c>completed_at</c>.
+    /// </summary>
+    Task MarkFailed(Guid id, string error, int durationMs, CancellationToken ct);
 }

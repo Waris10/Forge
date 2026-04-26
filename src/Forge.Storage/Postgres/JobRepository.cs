@@ -145,4 +145,52 @@ public class JobRepository : IJobRepository
                 DurationMs);
         }
     }
+
+    public async Task MarkRunning(Guid id, CancellationToken ct)
+    {
+        const string sql = """
+        UPDATE jobs
+        SET status     = 'running',
+            attempts   = attempts + 1,
+            started_at = now()
+        WHERE id = @Id
+        """;
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(sql, new { Id = id }, cancellationToken: ct));
+    }
+
+    public async Task MarkSucceeded(Guid id, int durationMs, CancellationToken ct)
+    {
+        const string sql = """
+        UPDATE jobs
+        SET status       = 'succeeded',
+            completed_at = now(),
+            duration_ms  = @DurationMs
+        WHERE id = @Id
+        """;
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            sql, new { Id = id, DurationMs = durationMs }, cancellationToken: ct));
+    }
+
+    public async Task MarkFailed(Guid id, string error, int durationMs, CancellationToken ct)
+    {
+        const string sql = """
+        UPDATE jobs
+        SET status       = 'failed',
+            completed_at = now(),
+            duration_ms  = @DurationMs,
+            last_error   = @Error
+        WHERE id = @Id
+        """;
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            sql, new { Id = id, Error = error, DurationMs = durationMs }, cancellationToken: ct));
+    }
 }
