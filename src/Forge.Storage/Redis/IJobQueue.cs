@@ -44,4 +44,41 @@ public interface IJobQueue
     /// — in that case the job is already on the scheduled zset).
     /// </summary>
     Task Ack(string workerId, Guid jobId, CancellationToken ct);
+
+    /// <summary>
+    /// Move a job from this worker's processing list onto the scheduled zset
+    /// with a score equal to <paramref name="runAt"/>'s unix-ms. The scheduler
+    /// will promote it back to the ready queue when its time comes.
+    ///
+    /// Used by the executor's retry path: handler threw, we computed a backoff
+    /// delay, now we reschedule. The atomicity of "remove from processing
+    /// AND add to scheduled" matters: a worker crash mid-call could otherwise
+    /// duplicate the job (still in processing, also in scheduled) or lose it
+    /// (gone from processing, never made it to scheduled).
+    /// </summary>
+    Task RescheduleFromProcessing(
+        string workerId,
+        Guid jobId,
+        DateTimeOffset runAt,
+        CancellationToken ct);
+
+    /// <summary>
+    /// Move a job from this worker's processing list onto the dead letter
+    /// queue. Called when retries are exhausted. Same atomicity concern as
+    /// <see cref="RescheduleFromProcessing"/>.
+    /// </summary>
+    Task MoveToDlq(string workerId, Guid jobId, CancellationToken ct);
+
+    /// <summary>
+    /// Promote any jobs on the scheduled zset whose score is &lt;= now back to
+    /// their queue (LPUSH). Returns the number promoted. Called periodically
+    /// by the scheduler.
+    ///
+    /// Implementation in M3: multi-command (ZRANGEBYSCORE / ZREM / LPUSH).
+    /// Atomicity is loose — two scheduler instances could promote the same
+    /// job twice. M4 fixes this by replacing the body with a Lua script that
+    /// runs server-side as a single atomic operation, plus a singleton lock
+    /// across scheduler instances.
+    /// </summary>
+    Task<int> PromoteDueJobs(int batch, CancellationToken ct);
 }

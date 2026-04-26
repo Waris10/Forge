@@ -193,4 +193,47 @@ public class JobRepository : IJobRepository
         await conn.ExecuteAsync(new CommandDefinition(
             sql, new { Id = id, Error = error, DurationMs = durationMs }, cancellationToken: ct));
     }
+
+    public async Task MarkRetrying(
+    Guid id,
+    DateTimeOffset nextRunAt,
+    string error,
+    CancellationToken ct)
+    {
+        const string sql = """
+        UPDATE jobs
+        SET status        = 'queued',
+            last_error    = @Error,
+            scheduled_for = @NextRunAt,
+            started_at    = NULL,
+            completed_at  = NULL,
+            duration_ms   = NULL
+        WHERE id = @Id
+        """;
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            sql,
+            new { Id = id, NextRunAt = nextRunAt, Error = error },
+            cancellationToken: ct));
+    }
+
+    public async Task MarkDead(Guid id, string error, CancellationToken ct)
+    {
+        const string sql = """
+        UPDATE jobs
+        SET status       = 'dead',
+            last_error   = @Error,
+            completed_at = now()
+        WHERE id = @Id
+        """;
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            sql,
+            new { Id = id, Error = error },
+            cancellationToken: ct));
+    }
 }

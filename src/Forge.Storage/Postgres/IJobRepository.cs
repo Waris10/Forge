@@ -41,4 +41,19 @@ public interface IJobRepository
     /// Stores <c>last_error</c> and stamps <c>completed_at</c>.
     /// </summary>
     Task MarkFailed(Guid id, string error, int durationMs, CancellationToken ct);
+
+    /// <summary>
+    /// Mark a job for retry: status returns to 'queued', <c>last_error</c> is
+    /// recorded, <c>scheduled_for</c> stamps when the job will be eligible to
+    /// run again. Note: <c>attempts</c> was already incremented by
+    /// <see cref="MarkRunning"/> before the handler ran, so we don't bump it
+    /// again here.
+    /// </summary>
+    Task MarkRetrying(Guid id, DateTimeOffset nextRunAt, string error, CancellationToken ct);
+
+    /// <summary>
+    /// Mark a job dead — terminal, no more retries. Called when attempts have
+    /// been exhausted. Stamps <c>completed_at</c> and <c>last_error</c>.
+    /// </summary>
+    Task MarkDead(Guid id, string error, CancellationToken ct);
 }

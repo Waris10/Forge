@@ -52,14 +52,15 @@ builder.Services.AddSingleton<Channel<Guid>>(_ =>
 // We register them under their concrete type, then build a name->handler
 // dictionary for the registry.
 builder.Services.AddSingleton<NoOpHandler>();
+builder.Services.AddSingleton<FlakyHandler>();
 
 builder.Services.AddSingleton(sp =>
 {
     var handlers = new Dictionary<string, IJobHandler>(StringComparer.OrdinalIgnoreCase)
     {  
         ["NoOp"] = sp.GetRequiredService<NoOpHandler>(),
-        // Add new handlers here:
-        // ["SendEmail"] = sp.GetRequiredService<SendEmailHandler>(),
+        ["Flaky"] = sp.GetRequiredService<FlakyHandler>(),
+
     };
     return new HandlerRegistry(handlers);
 });
@@ -69,6 +70,7 @@ builder.Services.AddSingleton(sp =>
 // Order of registration is roughly the order Start is called, but they
 // all run concurrently. The puller fills the channel; executors drain it.
 builder.Services.AddHostedService<PullerService>();
+builder.Services.AddHostedService<SchedulerTickService>();
 
 // Register N executors, where N comes from WorkerOptions.ExecutorCount.
 // We need to read the option *now* (at registration time) to know how many

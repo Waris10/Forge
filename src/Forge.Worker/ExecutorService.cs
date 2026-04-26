@@ -1,11 +1,12 @@
-﻿using System.Diagnostics;
-using System.Threading.Channels;
+﻿using Forge.Core;
 using Forge.Storage.Postgres;
 using Forge.Storage.Redis;
 using Forge.Worker.Handlers;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
+using System.Threading.Channels;
 
 namespace Forge.Worker;
 
@@ -121,17 +122,30 @@ public class ExecutorService : BackgroundService
         catch (Exception ex)
         {
             sw.Stop();
-            _logger.LogError(ex,
-                "Job {JobId} ({JobType}) failed after {DurationMs}ms: {Message}",
-                jobId, job.JobType, sw.ElapsedMilliseconds, ex.Message);
+            var nextAttempt = job.Attempts + 1;  // we already ran attempt N; this is N+1
 
-            // M2 failure path: terminal. M3 replaces this with retry logic.
-            await _queue.Ack(_options.WorkerId, jobId, CancellationToken.None);
-            await repo.MarkFailed(
-                jobId,
-                ex.Message,
-                (int)sw.ElapsedMilliseconds,
-                CancellationToken.None);
+            if (nextAttempt >= job.MaxAttempts)
+            {
+                _logger.LogError(ex,
+                    "Job {JobId} ({JobType}) DEAD after {Attempts}/{MaxAttempts} attempts: {Message}",
+                    jobId, job.JobType, nextAttempt, job.MaxAttempts, ex.Message);
+
+                await _queue.MoveToDlq(_options.WorkerId, jobId, CancellationToken.None);
+                await repo.MarkDead(jobId, ex.Message, CancellationToken.None);
+            }
+            else
+            {
+                var delay = RetryPolicy.Delay(nextAttempt);
+                var nextRunAt = DateTimeOffset.UtcNow + delay;
+
+                _logger.LogWarning(ex,
+                    "Job {JobId} ({JobType}) failed (attempt {Attempts}/{MaxAttempts}), retrying in {Delay}",
+                    jobId, job.JobType, nextAttempt, job.MaxAttempts, delay);
+
+                await _queue.RescheduleFromProcessing(
+                    _options.WorkerId, jobId, nextRunAt, CancellationToken.None);
+                await repo.MarkRetrying(jobId, nextRunAt, ex.Message, CancellationToken.None);
+            }
         }
     }
 }
