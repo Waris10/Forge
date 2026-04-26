@@ -94,4 +94,32 @@ public interface IJobQueue
     /// across scheduler instances.
     /// </summary>
     Task<int> PromoteDueJobs(int batch, CancellationToken ct);
+
+    /// <summary>
+    /// Refresh this worker's heartbeat key with a fresh TTL. Idempotent —
+    /// safe to call repeatedly. The heartbeat key going missing is how the
+    /// janitor detects worker death.
+    /// </summary>
+    Task Heartbeat(string workerId, TimeSpan ttl, CancellationToken ct);
+
+    /// <summary>
+    /// Find worker ids whose processing list is non-empty but whose heartbeat
+    /// key is missing — i.e. workers that died with jobs still in flight.
+    /// Uses SCAN, not KEYS, to avoid blocking Redis on large key spaces.
+    /// </summary>
+    Task<IReadOnlyList<string>> FindDeadWorkers(CancellationToken ct);
+
+    /// <summary>
+    /// Recover a single dead worker's processing list. For each job id:
+    ///   - Increment requeue_count in the per-job hash.
+    ///   - If requeue_count &lt; <paramref name="maxRequeue"/>, LPUSH back
+    ///     onto its queue.
+    ///   - Otherwise, LPUSH onto the DLQ (poison pill).
+    /// Then deletes the processing list itself.
+    /// Returns (recovered, poisoned) counts.
+    /// </summary>
+    Task<(int recovered, int poisoned)> RecoverDeadWorker(
+        string workerId,
+        int maxRequeue,
+        CancellationToken ct);
 }

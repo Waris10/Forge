@@ -53,6 +53,7 @@ builder.Services.AddSingleton<Channel<Guid>>(_ =>
 // dictionary for the registry.
 builder.Services.AddSingleton<NoOpHandler>();
 builder.Services.AddSingleton<FlakyHandler>();
+builder.Services.AddSingleton<SlowHandler>();
 
 builder.Services.AddSingleton(sp =>
 {
@@ -60,6 +61,7 @@ builder.Services.AddSingleton(sp =>
     {
         ["NoOp"] = sp.GetRequiredService<NoOpHandler>(),
         ["Flaky"] = sp.GetRequiredService<FlakyHandler>(),
+        ["Slow"] = sp.GetRequiredService<SlowHandler>(),
 
     };
     return new HandlerRegistry(handlers);
@@ -70,6 +72,7 @@ builder.Services.AddSingleton(sp =>
 // Order of registration is roughly the order Start is called, but they
 // all run concurrently. The puller fills the channel; executors drain it.
 builder.Services.AddHostedService<PullerService>();
+builder.Services.AddHostedService<HeartbeatService>();
 
 // Register N executors, where N comes from WorkerOptions.ExecutorCount.
 // We need to read the option *now* (at registration time) to know how many

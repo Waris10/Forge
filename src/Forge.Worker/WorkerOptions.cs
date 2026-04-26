@@ -10,6 +10,21 @@
 public class WorkerOptions
 {
     /// <summary>
+    /// How often to write the heartbeat key. Should be well under
+    /// <see cref="HeartbeatTtl"/> so a missed tick doesn't trigger spurious
+    /// recovery. 10 seconds gives 3 writes per TTL window.
+    /// </summary>
+    public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// TTL on the heartbeat key. Once this elapses without a refresh, the
+    /// janitor treats this worker as dead. 30 seconds is the spec's pick:
+    /// long enough to absorb a long GC pause or network blip, short enough
+    /// that a real death is detected promptly.
+    /// </summary>
+    public TimeSpan HeartbeatTtl { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// The Redis queue this worker pulls from. Defaults to "default".
     /// Later we'll let one process pull from multiple queues; for now, one.
     /// </summary>

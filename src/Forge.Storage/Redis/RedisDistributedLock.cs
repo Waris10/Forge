@@ -1,6 +1,6 @@
 ﻿using StackExchange.Redis;
 
-namespace Forge.Scheduler;
+namespace Forge.Storage.Redis;
 
 /// <summary>
 /// A single-instance Redis lock using SET NX PX. The simplest correct lock

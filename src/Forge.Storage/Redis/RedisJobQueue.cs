@@ -12,6 +12,45 @@ namespace Forge.Storage.Redis;
 /// </summary>
 public class RedisJobQueue : IJobQueue
 {
+    /// <summary>
+    /// Recover a single job from a dead worker. Atomic.
+    ///
+    /// KEYS[1] = source processing list (forge:processing:{deadWorkerId})
+    /// KEYS[2] = DLQ (forge:dlq)
+    /// ARGV[1] = jobId
+    /// ARGV[2] = max requeue count threshold
+    /// ARGV[3] = key prefix for per-job hashes  ("forge:job:")
+    /// ARGV[4] = key prefix for queues           ("forge:queue:")
+    ///
+    /// Returns:
+    ///   "recovered" -> requeued onto its queue
+    ///   "poisoned"  -> requeue count exceeded; sent to DLQ
+    ///
+    /// Steps:
+    ///   1. LREM the job from the dead worker's processing list (count=1).
+    ///   2. HINCRBY the job's hash, field "requeue_count", by 1.
+    ///   3. If new count >= threshold: LPUSH onto DLQ. Return "poisoned".
+    ///   4. Else: HGET the queue field (default "default"); LPUSH onto it.
+    ///      Return "recovered".
+    /// </summary>
+    private const string RecoverJobLua = """
+    redis.call('LREM', KEYS[1], 1, ARGV[1])
+
+    local jobKey = ARGV[3] .. ARGV[1]
+    local count = redis.call('HINCRBY', jobKey, 'requeue_count', 1)
+
+    if count >= tonumber(ARGV[2]) then
+      redis.call('LPUSH', KEYS[2], ARGV[1])
+      return 'poisoned'
+    end
+
+    local q = redis.call('HGET', jobKey, 'queue')
+    if not q or q == false then
+      q = 'default'
+    end
+    redis.call('LPUSH', ARGV[4] .. q, ARGV[1])
+    return 'recovered'
+    """;
 
     /// <summary>
     /// Atomically promotes due jobs from the scheduled zset back to their
@@ -205,5 +244,105 @@ public class RedisJobQueue : IJobQueue
 
         // The script returns an integer count.
         return (int)(long)result;
+    }
+
+    public async Task Heartbeat(string workerId, TimeSpan ttl, CancellationToken ct)
+    {
+        var db = _redis.GetDatabase();
+        await db.StringSetAsync(
+            key: RedisKeys.Heartbeat(workerId),
+            value: "alive",
+            expiry: ttl);
+    }
+
+
+    public async Task<IReadOnlyList<string>> FindDeadWorkers(CancellationToken ct)
+    {
+        var db = _redis.GetDatabase();
+        var server = GetServer();
+
+        var dead = new List<string>();
+
+        // SCAN forge:processing:* — cursor-based, doesn't block Redis.
+        // pageSize 100 is the StackExchange.Redis default; tunable later.
+        var keys = server.KeysAsync(
+            pattern: "forge:processing:*",
+            pageSize: 100);
+
+        await foreach (var key in keys.WithCancellation(ct))
+        {
+            // forge:processing:worker-host-1234  ->  worker-host-1234
+            var workerId = ((string)key!)["forge:processing:".Length..];
+
+            // Two checks: list non-empty AND heartbeat missing.
+            // An empty processing list is benign (worker idle), no recovery needed.
+            // A heartbeat present means the worker is alive even if it has work
+            // sitting in its processing list.
+            var len = await db.ListLengthAsync(key);
+            if (len == 0) continue;
+
+            var alive = await db.KeyExistsAsync(RedisKeys.Heartbeat(workerId));
+            if (alive) continue;
+
+            dead.Add(workerId);
+        }
+
+        return dead;
+    }
+
+    /// <summary>
+    /// Pick a Redis "server" endpoint for SCAN-style commands. SCAN is per-node,
+    /// not per-cluster, so it can't go through GetDatabase() — it needs a server
+    /// reference. For our single-node deployment we just take the first endpoint.
+    /// </summary>
+    private IServer GetServer()
+    {
+        var endpoint = _redis.GetEndPoints().First();
+        return _redis.GetServer(endpoint);
+    }
+
+
+    public async Task<(int recovered, int poisoned)> RecoverDeadWorker(
+    string workerId,
+    int maxRequeue,
+    CancellationToken ct)
+    {
+        var db = _redis.GetDatabase();
+        var processingKey = RedisKeys.Processing(workerId);
+
+        // Snapshot the list. Reading via LRANGE is read-only and safe to do
+        // outside the script — the per-job script is what mutates state.
+        var ids = await db.ListRangeAsync(processingKey);
+        if (ids.Length == 0) return (0, 0);
+
+        var recovered = 0;
+        var poisoned = 0;
+
+        foreach (var id in ids)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            var result = await db.ScriptEvaluateAsync(
+                RecoverJobLua,
+                keys: new RedisKey[] { processingKey, RedisKeys.Dlq },
+                values: new RedisValue[]
+                {
+                id,
+                maxRequeue,
+                "forge:job:",
+                "forge:queue:"
+                });
+
+            var verdict = (string?)result;
+            if (verdict == "recovered") recovered++;
+            else if (verdict == "poisoned") poisoned++;
+        }
+
+        // Belt-and-suspenders: ensure the processing list is gone. The LREMs
+        // inside each script call should have emptied it, but if some ids were
+        // duplicates or scanning races hit, this is a tidy final state.
+        await db.KeyDeleteAsync(processingKey);
+
+        return (recovered, poisoned);
     }
 }
