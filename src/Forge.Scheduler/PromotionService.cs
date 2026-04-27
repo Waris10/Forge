@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 
 namespace Forge.Scheduler;
 
@@ -28,10 +29,12 @@ public class PromotionService : BackgroundService
     private readonly IJobQueue _queue;
     private readonly SchedulerOptions _options;
     private readonly ILogger<PromotionService> _logger;
+    private readonly IConnectionMultiplexer _redis;
 
     public PromotionService(
         RedisDistributedLock distributedLock,
         IJobQueue queue,
+        IConnectionMultiplexer redis,
         IOptions<SchedulerOptions> options,
         ILogger<PromotionService> logger)
     {
@@ -39,6 +42,7 @@ public class PromotionService : BackgroundService
         _queue = queue;
         _options = options.Value;
         _logger = logger;
+        _redis = redis;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -108,6 +112,15 @@ public class PromotionService : BackgroundService
                 // try again next tick.
             }
 
+            try
+            {
+                await UpdateGauges(stoppingToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Gauge update errored. Continuing.");
+            }
+
             // 2. Refresh the lock if it's been a while.
             if (DateTimeOffset.UtcNow - lastRefresh >= _options.LockRefreshInterval)
             {
@@ -139,5 +152,37 @@ public class PromotionService : BackgroundService
     {
         try { await Task.Delay(delay, ct); }
         catch (OperationCanceledException) { /* graceful shutdown */ }
+    }
+
+
+    private async Task UpdateGauges(CancellationToken ct)
+    {
+        // We need raw Redis access to do LLEN/ZCARD/SCAN. The IJobQueue interface
+        // doesn't expose those directly — and shouldn't, those are observability
+        // concerns, not job-flow concerns. Adding methods just for gauge reads
+        // would bloat the interface.
+        //
+        // Two options: add observability methods to IJobQueue, or take the raw
+        // multiplexer here. We pick the second — gauges live in the scheduler,
+        // gauges read from Redis, scheduler can hold a multiplexer reference for
+        // exactly this purpose.
+        var db = _redis.GetDatabase();
+
+        var defaultDepth = await db.ListLengthAsync("forge:queue:default");
+        Forge.Core.Metrics.QueueDepth.WithLabels("default").Set(defaultDepth);
+
+        var dlqDepth = await db.ListLengthAsync("forge:dlq");
+        Forge.Core.Metrics.DlqDepth.Set(dlqDepth);
+
+        // workers_alive: count of forge:heartbeat:* keys.
+        // Same SCAN trick as the janitor uses — KEYS would block.
+        var server = _redis.GetServer(_redis.GetEndPoints().First());
+        var aliveCount = 0;
+        await foreach (var _ in server.KeysAsync(pattern: "forge:heartbeat:*", pageSize: 100)
+                                      .WithCancellation(ct))
+        {
+            aliveCount++;
+        }
+        Forge.Core.Metrics.WorkersAlive.Set(aliveCount);
     }
 }

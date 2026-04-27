@@ -1,9 +1,15 @@
+using Forge.Core;
 using Forge.Scheduler;
 using Forge.Storage.Redis;
+using Forge.Worker;
+using Prometheus;
+using Serilog;
 using StackExchange.Redis;
 
-var builder = Host.CreateApplicationBuilder(args);
+Log.Logger = LoggingSetup.Build("Forge.Scheduler").CreateLogger();
 
+var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddSerilog();
 // --- Configuration ---
 
 var redisConnStr = builder.Configuration.GetConnectionString("Redis")
@@ -26,6 +32,8 @@ builder.Services.AddSingleton<RedisDistributedLock>();
 // --- The scheduler itself ---
 
 builder.Services.AddHostedService<PromotionService>();
+builder.Services.AddHostedService<MetricsServerHost>();
+
 
 // --- Graceful shutdown timeout ---
 
@@ -33,6 +41,8 @@ builder.Services.Configure<HostOptions>(opts =>
 {
     opts.ShutdownTimeout = TimeSpan.FromSeconds(10);
 });
+
+builder.Services.AddSingleton(new KestrelMetricServer(port: 9102));
 
 var host = builder.Build();
 host.Run();

@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'forge-api'
+    static_configs:
+      - targets: ['host.docker.internal:5171']
+
+  - job_name: 'forge-worker'
+    static_configs:
+      - targets: ['host.docker.internal:9101']
+
+  - job_name: 'forge-scheduler'
+    static_configs:
+      - targets: ['host.docker.internal:9102']
+
+  - job_name: 'forge-janitor'
+    static_configs:
+      - targets: ['host.docker.internal:9103']

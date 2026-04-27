@@ -2,10 +2,14 @@ using Forge.Api.Contracts;
 using Forge.Core;
 using Forge.Storage.Postgres;
 using Forge.Storage.Redis;
+using Prometheus;
+using Serilog;
 using StackExchange.Redis;
 
+Log.Logger = LoggingSetup.Build("Forge.Api").CreateLogger();
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Host.UseSerilog();
 // --- Configuration ---
 var postgresConnStr = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is not configured.");
@@ -32,6 +36,9 @@ var app = builder.Build();
 // --- Endpoints ---
 
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
+
+app.UseHttpMetrics();   // tracks HTTP request count/duration on the API
+app.MapMetrics();        // exposes /metrics
 
 app.MapPost("/jobs", async (
     SubmitJobRequest req,
@@ -79,6 +86,10 @@ app.MapPost("/jobs", async (
     //     that it's acceptable for a portfolio project. Milestone 5's janitor
     //     could be extended to sweep for such orphans.
     await repo.Insert(job, ct);
+
+    Forge.Core.Metrics.JobsSubmitted
+    .WithLabels(job.JobType, job.Queue)
+    .Inc();
 
     if (job.ScheduledFor is { } runAt) //Means if Schedule is not null then access it via the .Value prop capture it value into runAt
     {

@@ -1,12 +1,19 @@
+using Forge.Core;
 using Forge.Storage.Postgres;
 using Forge.Storage.Redis;
 using Forge.Worker;
 using Forge.Worker.Handlers;
+using Prometheus;
+using Serilog;
 using StackExchange.Redis;
 using System.Threading.Channels;
 
+
+Log.Logger = LoggingSetup.Build("Forge.Worker").CreateLogger();
+
 var builder = Host.CreateApplicationBuilder(args);
 
+builder.Services.AddSerilog();
 // --- Configuration ---
 
 var postgresConnStr = builder.Configuration.GetConnectionString("Postgres")
@@ -55,6 +62,7 @@ builder.Services.AddSingleton<NoOpHandler>();
 builder.Services.AddSingleton<FlakyHandler>();
 builder.Services.AddSingleton<SlowHandler>();
 
+
 builder.Services.AddSingleton(sp =>
 {
     var handlers = new Dictionary<string, IJobHandler>(StringComparer.OrdinalIgnoreCase)
@@ -73,6 +81,7 @@ builder.Services.AddSingleton(sp =>
 // all run concurrently. The puller fills the channel; executors drain it.
 builder.Services.AddHostedService<PullerService>();
 builder.Services.AddHostedService<HeartbeatService>();
+builder.Services.AddHostedService<MetricsServerHost>();
 
 // Register N executors, where N comes from WorkerOptions.ExecutorCount.
 // We need to read the option *now* (at registration time) to know how many
@@ -87,6 +96,7 @@ builder.Services.AddHostedService<HeartbeatService>();
     }
 }
 
+
 // --- Graceful shutdown timeout ---
 
 // Default is 30s in newer .NET versions, but the spec calls for a generous
@@ -95,6 +105,11 @@ builder.Services.Configure<HostOptions>(opts =>
 {
     opts.ShutdownTimeout = TimeSpan.FromSeconds(30);
 });
+
+// Expose Prometheus metrics on a side port. The worker isn't a web host,
+// so we use Kestrel-backed standalone metrics server. Port 9101 is a
+// convention (9090 is Prometheus itself; 91xx is custom apps).
+builder.Services.AddSingleton(new KestrelMetricServer(port: 9101));
 
 var host = builder.Build();
 host.Run();

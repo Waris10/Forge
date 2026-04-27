@@ -92,6 +92,9 @@ public class JanitorService : BackgroundService
                     var (recovered, poisoned) = await _queue.RecoverDeadWorker(
                         workerId, _options.MaxRequeueCount, stoppingToken);
 
+                    Forge.Core.Metrics.JobsRecovered.WithLabels("requeued").Inc(recovered);
+                    Forge.Core.Metrics.JobsRecovered.WithLabels("poisoned").Inc(poisoned);
+
                     _logger.LogWarning(
                         "Recovered dead worker {WorkerId}: {Recovered} requeued, {Poisoned} sent to DLQ.",
                         workerId, recovered, poisoned);

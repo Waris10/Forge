@@ -3,6 +3,7 @@ using Forge.Storage.Postgres;
 using Forge.Storage.Redis;
 using Forge.Worker.Handlers;
 using Microsoft.Extensions.Options;
+using Serilog.Context;
 using System.Diagnostics;
 using System.Threading.Channels;
 
@@ -75,6 +76,12 @@ public class ExecutorService : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var repo = scope.ServiceProvider.GetRequiredService<IJobRepository>();
 
+        // Scope structured properties for the duration of this job's execution.
+        // Every log line emitted inside this method (including by the handler!)
+        // will carry these fields automatically. This is the killer feature of
+        // structured logging: search "all events for job X" by id alone.
+        using var jobIdScope = LogContext.PushProperty("JobId", jobId);
+
         var job = await repo.Get(jobId, stoppingToken);
         if (job is null)
         {
@@ -85,6 +92,9 @@ public class ExecutorService : BackgroundService
             await _queue.Ack(_options.WorkerId, jobId, stoppingToken);
             return;
         }
+
+        using var jobTypeScope = LogContext.PushProperty("JobType", job.JobType);
+        using var attemptsScope = LogContext.PushProperty("Attempts", job.Attempts + 1);
 
         await repo.MarkRunning(jobId, stoppingToken);
 
@@ -103,6 +113,13 @@ public class ExecutorService : BackgroundService
             sw.Stop();
             await _queue.Ack(_options.WorkerId, jobId, stoppingToken);
             await repo.MarkSucceeded(jobId, (int)sw.ElapsedMilliseconds, stoppingToken);
+
+            Forge.Core.Metrics.JobsCompleted
+    .WithLabels(job.JobType, "succeeded")
+    .Inc();
+            Forge.Core.Metrics.JobDurationSeconds
+                .WithLabels(job.JobType, "succeeded")
+                .Observe(sw.Elapsed.TotalSeconds);
 
             _logger.LogInformation(
                 "Job {JobId} ({JobType}) succeeded in {DurationMs}ms",
@@ -130,6 +147,14 @@ public class ExecutorService : BackgroundService
 
                 await _queue.MoveToDlq(_options.WorkerId, jobId, CancellationToken.None);
                 await repo.MarkDead(jobId, ex.Message, CancellationToken.None);
+
+                Forge.Core.Metrics.JobsCompleted
+                    .WithLabels(job.JobType, "dead")
+                    .Inc();
+
+                Forge.Core.Metrics.JobDurationSeconds
+                    .WithLabels(job.JobType, "dead")
+                    .Observe(sw.Elapsed.TotalSeconds);
             }
             else
             {
