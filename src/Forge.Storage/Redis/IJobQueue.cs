@@ -122,4 +122,11 @@ public interface IJobQueue
         string workerId,
         int maxRequeue,
         CancellationToken ct);
+
+    /// <summary>
+    /// Read the trace context (W3C traceparent string) saved on a job's hash
+    /// at enqueue time. Returns null if no traceparent was stored.
+    /// Used by the worker to link its execute span to the API's submit span.
+    /// </summary>
+    Task<string?> GetTraceparent(Guid jobId, CancellationToken ct);
 }

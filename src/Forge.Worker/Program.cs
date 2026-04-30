@@ -3,6 +3,8 @@ using Forge.Storage.Postgres;
 using Forge.Storage.Redis;
 using Forge.Worker;
 using Forge.Worker.Handlers;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Prometheus;
 using Serilog;
 using StackExchange.Redis;
@@ -14,8 +16,18 @@ Log.Logger = LoggingSetup.Build("Forge.Worker").CreateLogger();
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddSerilog();
-// --- Configuration ---
 
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService(serviceName: "Forge.Worker"))
+    .WithTracing(t => t
+        .AddSource(Forge.Core.TracingSetup.SourceName)
+        .AddOtlpExporter(opt =>
+        {
+            opt.Endpoint = new Uri("http://localhost:4317");
+        }));
+
+
+// --- Configuration ---
 var postgresConnStr = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException(
         "ConnectionStrings:Postgres is not configured.");

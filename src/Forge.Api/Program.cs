@@ -2,6 +2,8 @@ using Forge.Api.Contracts;
 using Forge.Core;
 using Forge.Storage.Postgres;
 using Forge.Storage.Redis;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Prometheus;
 using Serilog;
 using StackExchange.Redis;
@@ -10,6 +12,18 @@ Log.Logger = LoggingSetup.Build("Forge.Api").CreateLogger();
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Host.UseSerilog();
+
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService(serviceName: "Forge.Api"))
+    .WithTracing(t => t
+        .AddSource(Forge.Core.TracingSetup.SourceName)
+        .AddAspNetCoreInstrumentation()
+        .AddOtlpExporter(opt =>
+        {
+            opt.Endpoint = new Uri("http://localhost:4317");
+        }));
+
+
 // --- Configuration ---
 var postgresConnStr = builder.Configuration.GetConnectionString("Postgres")
     ?? throw new InvalidOperationException("ConnectionStrings:Postgres is not configured.");
@@ -32,6 +46,9 @@ builder.Services.AddSingleton<IJobQueue, RedisJobQueue>();
 DapperConfig.Configure();
 
 var app = builder.Build();
+
+
+
 
 // --- Endpoints ---
 
@@ -69,6 +86,9 @@ app.MapPost("/jobs", async (
         ? DateTimeOffset.UtcNow.AddSeconds(req.DelaySeconds.Value)
         : (DateTimeOffset?)null;
 
+    using var activity = Forge.Core.TracingSetup.Source.StartActivity("api.submit");
+    activity?.SetTag("job.type", req.JobType);
+
     var job = Job.NewQueued(
         jobType: req.JobType,
         payload: req.Payload,
@@ -87,9 +107,7 @@ app.MapPost("/jobs", async (
     //     could be extended to sweep for such orphans.
     await repo.Insert(job, ct);
 
-    Forge.Core.Metrics.JobsSubmitted
-    .WithLabels(job.JobType, job.Queue)
-    .Inc();
+    activity?.SetTag("job.id", job.Id.ToString());
 
     if (job.ScheduledFor is { } runAt) //Means if Schedule is not null then access it via the .Value prop capture it value into runAt
     {
@@ -99,6 +117,10 @@ app.MapPost("/jobs", async (
     {
         await queue.Enqueue(job.Queue, job.Id, ct);
     }
+
+    Forge.Core.Metrics.JobsSubmitted
+    .WithLabels(job.JobType, job.Queue)
+    .Inc();
 
     return Results.Accepted(
         $"/jobs/{job.Id}",

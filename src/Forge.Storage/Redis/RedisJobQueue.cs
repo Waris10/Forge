@@ -97,12 +97,24 @@ public class RedisJobQueue : IJobQueue
         var db = _redis.GetDatabase();
         var idStr = jobId.ToString();
 
+        // Capture the current trace context, if any. This is what lets the
+        // worker reconstruct a trace that links its execute span to the API's
+        // submit span — propagating across the queue boundary.
+        //var traceparent = System.Diagnostics.Activity.Current?.Id;
+
+        var traceparent = System.Diagnostics.Activity.Current?.Id;
+        Console.WriteLine($"[DEBUG] Enqueue Activity.Current?.Id = {traceparent ?? "<null>"}");
+
+        var hashFields = new List<HashEntry> { new("queue", queueName) };
+        if (traceparent is not null)
+            hashFields.Add(new HashEntry("traceparent", traceparent));
+
         // Two writes: per-job hash (so the scheduler can route on promote)
         // and the LPUSH onto the ready queue. Pipelined into one RTT.
         var batch = db.CreateBatch();
         var hashTask = batch.HashSetAsync(
             RedisKeys.Job(jobId),
-            new[] { new HashEntry("queue", queueName) });
+            hashFields.ToArray());
         var pushTask = batch.ListLeftPushAsync(RedisKeys.Queue(queueName), idStr);
         batch.Execute();
 
@@ -120,10 +132,16 @@ public class RedisJobQueue : IJobQueue
         var idStr = jobId.ToString();
         var score = runAt.ToUnixTimeMilliseconds();
 
+        var traceparent = System.Diagnostics.Activity.Current?.Id;
+
+        var hashFields = new List<HashEntry> { new("queue", queueName) };
+        if (traceparent is not null) 
+            hashFields.Add(new HashEntry("traceparent", traceparent));
+
         var batch = db.CreateBatch();
         var hashTask = batch.HashSetAsync(
             RedisKeys.Job(jobId),
-            new[] { new HashEntry("queue", queueName) });
+            hashFields.ToArray());
         var addTask = batch.SortedSetAddAsync(RedisKeys.Scheduled, idStr, score);
         batch.Execute();
 
@@ -344,5 +362,12 @@ public class RedisJobQueue : IJobQueue
         await db.KeyDeleteAsync(processingKey);
 
         return (recovered, poisoned);
+    }
+
+    public async Task<string?> GetTraceparent(Guid jobId, CancellationToken ct)
+    {
+        var db = _redis.GetDatabase();
+        var value = await db.HashGetAsync(RedisKeys.Job(jobId), "traceparent");
+        return value.IsNullOrEmpty ? null : (string?)value;
     }
 }

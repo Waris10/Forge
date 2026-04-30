@@ -69,6 +69,25 @@ public class ExecutorService : BackgroundService
 
     private async Task ProcessOne(Guid jobId, CancellationToken stoppingToken)
     {
+        // Reconstruct the parent trace context if the API stamped one onto
+        // the job's hash. This is what makes the API submit span and the
+        // worker execute span appear in the SAME trace in Jaeger, rather
+        // than two adjacent unrelated traces.
+        var parentTraceparent = await _queue.GetTraceparent(jobId, stoppingToken);
+        ActivityContext parentContext = default;
+        if (parentTraceparent is not null && ActivityContext.TryParse(parentTraceparent, traceState: null, out var parsed))
+        {
+            parentContext = parsed;
+        }
+
+
+        using var activity = Forge.Core.TracingSetup.Source.StartActivity(
+    "worker.execute",
+    ActivityKind.Consumer,
+    parentContext);
+
+        activity?.SetTag("job.id", jobId.ToString());
+
         // Per-job DI scope. IJobRepository is registered as scoped, so each
         // job gets its own connection from the Npgsql pool. Without this,
         // we'd be resolving a scoped service from the singleton root scope
@@ -90,8 +109,12 @@ public class ExecutorService : BackgroundService
             // sit in our processing list forever.
             _logger.LogWarning("Job {JobId} not found in Postgres. Acking and skipping.", jobId);
             await _queue.Ack(_options.WorkerId, jobId, stoppingToken);
+            activity?.SetStatus(ActivityStatusCode.Error, "Job not found");
             return;
         }
+
+        activity?.SetTag("job.type", job.JobType);
+        activity?.SetTag("job.attempt", job.Attempts + 1);
 
         using var jobTypeScope = LogContext.PushProperty("JobType", job.JobType);
         using var attemptsScope = LogContext.PushProperty("Attempts", job.Attempts + 1);
@@ -121,12 +144,16 @@ public class ExecutorService : BackgroundService
                 .WithLabels(job.JobType, "succeeded")
                 .Observe(sw.Elapsed.TotalSeconds);
 
+            activity?.SetStatus(ActivityStatusCode.Ok);
+
             _logger.LogInformation(
                 "Job {JobId} ({JobType}) succeeded in {DurationMs}ms",
                 jobId, job.JobType, sw.ElapsedMilliseconds);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, "Worker shutting down");
+
             // Worker is shutting down mid-execution. Don't mark failed —
             // the janitor (M5) will requeue it from the processing list.
             // For M2 with no janitor, the row stays "running" until manual
@@ -137,6 +164,7 @@ public class ExecutorService : BackgroundService
         catch (Exception ex)
         {
             sw.Stop();
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             var nextAttempt = job.Attempts + 1;  // we already ran attempt N; this is N+1
 
             if (nextAttempt >= job.MaxAttempts)
