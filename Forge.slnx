@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Forge.Api/Forge.Api.csproj" />
     <Project Path="src/Forge.Core/Forge.Core.csproj" />
+    <Project Path="src/Forge.Dashboard/Forge.Dashboard.csproj" Id="b6ee8670-7c56-455a-ba68-3642a3352e52" />
     <Project Path="src/Forge.Janitor/Forge.Janitor.csproj" />
     <Project Path="src/Forge.Scheduler/Forge.Scheduler.csproj" />
     <Project Path="src/Forge.Storage/Forge.Storage.csproj" />

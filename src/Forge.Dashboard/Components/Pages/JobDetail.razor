@@ -1,0 +1,6 @@
+﻿@page "/jobs/{Id:guid}"
+@rendermode InteractiveServer
+<h1>Job @Id</h1>
+@code {
+    [Parameter] public Guid Id { get; set; }
+}

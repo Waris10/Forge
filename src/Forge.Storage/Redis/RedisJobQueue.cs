@@ -103,7 +103,7 @@ public class RedisJobQueue : IJobQueue
         //var traceparent = System.Diagnostics.Activity.Current?.Id;
 
         var traceparent = System.Diagnostics.Activity.Current?.Id;
-        Console.WriteLine($"[DEBUG] Enqueue Activity.Current?.Id = {traceparent ?? "<null>"}");
+        //Console.WriteLine($"[DEBUG] Enqueue Activity.Current?.Id = {traceparent ?? "<null>"}");
 
         var hashFields = new List<HashEntry> { new("queue", queueName) };
         if (traceparent is not null)
