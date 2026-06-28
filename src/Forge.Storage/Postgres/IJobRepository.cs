@@ -56,4 +56,9 @@ public interface IJobRepository
     /// been exhausted. Stamps <c>completed_at</c> and <c>last_error</c>.
     /// </summary>
     Task MarkDead(Guid id, string error, CancellationToken ct);
+
+    Task<IReadOnlyList<Job>> ListRecentAsync(
+    JobStatus? status,
+    int limit,
+    CancellationToken ct);
 }

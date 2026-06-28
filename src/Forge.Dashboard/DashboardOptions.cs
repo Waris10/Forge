@@ -16,4 +16,8 @@ public sealed class DashboardOptions
 
     /// <summary>Default queue name to display on the ops page.</summary>
     public string DefaultQueue { get; set; } = "default";
+
+    /// <summary>How many recent jobs the firehose broadcaster pushes.</summary>
+    public int JobListFirehoseSize { get; set; } = 100;
+
 }

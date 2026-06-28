@@ -235,4 +235,34 @@ public class JobRepository : IJobRepository
             new { Id = id, Error = error },
             cancellationToken: ct));
     }
+
+    public async Task<IReadOnlyList<Job>> ListRecentAsync(
+    JobStatus? status,
+    int limit,
+    CancellationToken ct)
+    {
+        const string sqlAll = @"
+        SELECT id, job_type, status, attempts, created_at,
+               started_at, finished_at, duration_ms, last_error
+        FROM jobs
+        ORDER BY created_at DESC
+        LIMIT @limit";
+
+        const string sqlByStatus = @"
+        SELECT id, job_type, status, attempts, created_at,
+               started_at, finished_at, duration_ms, last_error
+        FROM jobs
+        WHERE status = @status
+        ORDER BY created_at DESC
+        LIMIT @limit";
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+
+        var rows = status is null
+            ? await conn.QueryAsync<Job>(sqlAll, new { limit })
+            : await conn.QueryAsync<Job>(sqlByStatus, new { status = status.ToString(), limit });
+
+        return rows.ToList();
+    }
 }

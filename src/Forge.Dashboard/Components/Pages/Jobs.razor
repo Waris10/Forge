@@ -1,4 +1,162 @@
 ﻿@page "/jobs"
 @rendermode InteractiveServer
+@using Forge.Core
+@using Forge.Dashboard.Live
+@using Forge.Storage.Postgres
+@inject JobListBroadcaster Broadcaster
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager Nav
+@implements IAsyncDisposable
+
 <h1>Jobs</h1>
-<p>List goes here.</p>
+
+<div class="filter-bar">
+    <button class="@FilterButtonClass(null)" @onclick="() => SetFilter(null)">All</button>
+    <button class="@FilterButtonClass(JobStatus.Queued)" @onclick="() => SetFilter(JobStatus.Queued)">Queued</button>
+    <button class="@FilterButtonClass(JobStatus.Running)" @onclick="() => SetFilter(JobStatus.Running)">Running</button>
+    <button class="@FilterButtonClass(JobStatus.Succeeded)" @onclick="() => SetFilter(JobStatus.Succeeded)">Succeeded</button>
+    <button class="@FilterButtonClass(JobStatus.Failed)" @onclick="() => SetFilter(JobStatus.Failed)">Failed</button>
+    <button class="@FilterButtonClass(JobStatus.Dead)" @onclick="() => SetFilter(JobStatus.Dead)">Dead</button>
+</div>
+
+<p class="meta">
+    Showing @_jobs.Count jobs.
+    Last updated @_capturedAt.ToString("HH:mm:ss").
+    @if (_filter is not null) { <span>(filtered to @_filter)</span> }
+</p>
+
+<table class="jobs-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Attempts</th>
+            <th>Created</th>
+            <th>Duration</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var job in _jobs)
+        {
+            <tr @onclick="@(() => Nav.NavigateTo($"/jobs/{job.Id}"))" class="row-clickable">
+                <td><code>@job.Id.ToString()[..8]</code></td>
+                <td>@job.JobType</td>
+                <td><span class="status status-@job.Status.ToString().ToLower()">@job.Status</span></td>
+                <td>@job.Attempts</td>
+                <td>@job.CreatedAt.ToString("HH:mm:ss")</td>
+                <td>@(job.DurationMs is null ? "—" : $"{job.DurationMs}ms")</td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    private JobStatus? _filter;
+    private IReadOnlyList<Job> _jobs = Array.Empty<Job>();
+    private DateTime _capturedAt = DateTime.UtcNow;
+
+    // For the filtered-mode self-polling loop.
+    private CancellationTokenSource? _filterPollCts;
+
+    protected override void OnInitialized()
+    {
+        // Start in unfiltered mode — subscribe to the firehose.
+        SubscribeToBroadcaster();
+        ApplySnapshot(Broadcaster.Latest);
+    }
+
+    private void SubscribeToBroadcaster()
+    {
+        Broadcaster.OnJobsChanged += HandleBroadcasterUpdate;
+    }
+
+    private void UnsubscribeFromBroadcaster()
+    {
+        Broadcaster.OnJobsChanged -= HandleBroadcasterUpdate;
+    }
+
+    private async void HandleBroadcasterUpdate(JobListSnapshot snapshot)
+    {
+        // Only apply firehose updates when no filter is active.
+        if (_filter is not null) return;
+
+        ApplySnapshot(snapshot);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void ApplySnapshot(JobListSnapshot snapshot)
+    {
+        _jobs = snapshot.Jobs;
+        _capturedAt = snapshot.CapturedAt;
+    }
+
+    private async Task SetFilter(JobStatus? status)
+    {
+        if (_filter == status) return;
+        _filter = status;
+
+        // Cancel any in-flight self-polling loop from a previous filter.
+        if (_filterPollCts is not null)
+        {
+            await _filterPollCts.CancelAsync();
+            _filterPollCts.Dispose();
+            _filterPollCts = null;
+        }
+
+        if (_filter is null)
+        {
+            // Back to firehose mode. The broadcaster's Latest may be
+            // a few seconds stale but it'll refresh on next tick.
+            ApplySnapshot(Broadcaster.Latest);
+            StateHasChanged();
+            return;
+        }
+
+        // Filtered mode: kick off a self-polling loop scoped to this circuit.
+        _filterPollCts = new CancellationTokenSource();
+        _ = RunFilteredPollLoop(_filter.Value, _filterPollCts.Token);
+    }
+
+    private async Task RunFilteredPollLoop(JobStatus status, CancellationToken ct)
+    {
+        // Slower cadence than the firehose: filtered views are inherently
+        // about specific states (often historical), no need for 2s freshness.
+        var interval = TimeSpan.FromSeconds(3);
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                using var scope = ScopeFactory.CreateScope();
+                var repo = scope.ServiceProvider.GetRequiredService<IJobRepository>();
+                var jobs = await repo.ListRecentAsync(status, 100, ct);
+
+                _jobs = jobs;
+                _capturedAt = DateTime.UtcNow;
+                await InvokeAsync(StateHasChanged);
+            }
+            catch (OperationCanceledException) { /* expected on filter change / dispose */ }
+            catch (Exception)
+            {
+                // Swallow + continue. Could log via injected ILogger if we add one.
+            }
+
+            try { await Task.Delay(interval, ct); }
+            catch (OperationCanceledException) { return; }
+        }
+    }
+
+    private string FilterButtonClass(JobStatus? candidate) =>
+        _filter == candidate ? "filter-btn active" : "filter-btn";
+
+    public async ValueTask DisposeAsync()
+    {
+        UnsubscribeFromBroadcaster();
+        if (_filterPollCts is not null)
+        {
+            await _filterPollCts.CancelAsync();
+            _filterPollCts.Dispose();
+        }
+    }
+}
