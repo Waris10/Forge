@@ -138,4 +138,88 @@ app.MapGet("/jobs/{id:guid}", async (
         : Results.Ok(job);
 });
 
+app.MapPost("/jobs/{id:guid}/retry", async (
+    Guid id,
+    IJobRepository repo,
+    IJobQueue queue,
+    CancellationToken ct) =>
+{
+    var job = await repo.Get(id, ct);
+    if (job is null)
+        return Results.NotFound(new { error = "Job not found" });
+
+    if (job.Status is not (JobStatus.Failed or JobStatus.Dead))
+        return Results.Conflict(new
+        {
+            error = "Only failed or dead jobs can be retried",
+            currentStatus = job.Status.ToString().ToLowerInvariant()
+        });
+
+    await repo.MarkForRetry(id, ct);
+    await queue.Enqueue(job.Queue, id, ct);
+
+    return Results.Accepted($"/jobs/{id}", new { id, status = "queued" });
+});
+
+app.MapPost("/dlq/retry-all", async (
+    BulkRetryRequest? req,
+    IJobRepository repo,
+    IJobQueue queue,
+    ILogger<Program> logger,
+    CancellationToken ct) =>
+{
+    // Resolve target ids: explicit list if provided, otherwise every dead job.
+    Guid[] targetIds;
+    if (req?.Ids is { Length: > 0 } explicitIds)
+    {
+        targetIds = explicitIds;
+    }
+    else
+    {
+        var all = await repo.ListDeadJobIdsAsync(ct);
+        targetIds = all.ToArray();
+    }
+
+    if (targetIds.Length == 0)
+        return Results.Ok(new BulkRetryResponse(0, 0, 0, Array.Empty<Guid>()));
+
+    var retried = 0;
+    var failedIds = new List<Guid>();
+
+    foreach (var id in targetIds)
+    {
+        if (ct.IsCancellationRequested) break;
+
+        try
+        {
+            var job = await repo.Get(id, ct);
+
+            // Two reasons to skip: not found (already cleaned up?) or no longer
+            // in a retryable state (someone retried it between list and loop).
+            if (job is null ||
+                job.Status is not (JobStatus.Failed or JobStatus.Dead))
+            {
+                failedIds.Add(id);
+                continue;
+            }
+
+            await repo.MarkForRetry(id, ct);
+            await queue.Enqueue(job.Queue, id, ct);
+            retried++;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Bulk retry failed for {JobId}", id);
+            failedIds.Add(id);
+            // Continue — partial-success semantics.
+        }
+    }
+
+    return Results.Ok(new BulkRetryResponse(
+        Requested: targetIds.Length,
+        Retried: retried,
+        Failed: failedIds.Count,
+        FailedIds: failedIds.ToArray()));
+});
+
 app.Run();

@@ -61,4 +61,8 @@ public interface IJobRepository
     JobStatus? status,
     int limit,
     CancellationToken ct);
+
+    Task MarkForRetry(Guid id, CancellationToken ct);
+
+    Task<IReadOnlyList<Guid>> ListDeadJobIdsAsync(CancellationToken ct);
 }

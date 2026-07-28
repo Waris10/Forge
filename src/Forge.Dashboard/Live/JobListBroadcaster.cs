@@ -24,7 +24,7 @@ public sealed record JobListSnapshot(
 /// </summary>
 public sealed class JobListBroadcaster : BackgroundService
 {
-    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IServiceProvider _scopeFactory;
     private readonly DashboardOptions _options;
     private readonly ILogger<JobListBroadcaster> _logger;
 
@@ -35,7 +35,7 @@ public sealed class JobListBroadcaster : BackgroundService
     public event Action<JobListSnapshot>? OnJobsChanged;
 
     public JobListBroadcaster(
-        IServiceScopeFactory scopeFactory,
+        IServiceProvider scopeFactory,
         IOptions<DashboardOptions> options,
         ILogger<JobListBroadcaster> logger)
     {

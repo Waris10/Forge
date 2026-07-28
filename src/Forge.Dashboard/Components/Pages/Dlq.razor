@@ -1,0 +1,216 @@
+﻿@page "/dlq"
+@rendermode InteractiveServer
+@using System.Net.Http.Json
+@using Forge.Core
+@using Forge.Storage
+@using Forge.Dashboard.Live
+@inject DlqBroadcaster Broadcaster
+@inject IHttpClientFactory HttpFactory
+@inject NavigationManager Nav
+@implements IDisposable
+
+<h1>Dead Letter Queue</h1>
+
+<p class="meta">
+    @_jobs.Count dead job@(_jobs.Count == 1 ? "" : "s") visible.
+    Last updated @_capturedAt.ToString("HH:mm:ss").
+</p>
+
+<div class="dlq-actions">
+    <button class="retry-btn"
+            disabled="@(_jobs.Count == 0 || _bulkRunning)"
+            @onclick="() => ConfirmBulk(BulkScope.Visible)">
+        Retry visible (@_jobs.Count)
+    </button>
+    <button class="retry-btn danger"
+            disabled="@_bulkRunning"
+            @onclick="() => ConfirmBulk(BulkScope.AllInDb)">
+        Retry all in DLQ
+    </button>
+</div>
+
+@if (_bulkMessage is not null)
+{
+    <p class="@_bulkMessageClass">@_bulkMessage</p>
+}
+
+@if (_confirmingScope is not null)
+{
+    <div class="forge-modal-backdrop" @onclick="CancelConfirm">
+        <div class="forge-modal" @onclick:stopPropagation="true">
+            <h3>Confirm bulk retry</h3>
+            <p>
+                @if (_confirmingScope == BulkScope.Visible)
+                {
+                    <span>Retry the <strong>@_jobs.Count</strong> visible dead job@(_jobs.Count == 1 ? "" : "s")?</span>
+                }
+                else
+                {
+                    <span>Retry <strong>every</strong> dead job in the database? This may include jobs not visible on this page.</span>
+                }
+            </p>
+            <p class="meta">
+                Each job will be reset to <code>queued</code> with one fresh attempt
+                available. The original dead-row history is overwritten.
+            </p>
+            <div class="forge-modal-actions">
+                <button @onclick="CancelConfirm">Cancel</button>
+                <button class="retry-btn" @onclick="ExecuteBulk">
+                    Yes, retry
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<table class="jobs-table">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Type</th>
+            <th>Attempts</th>
+            <th>Died at</th>
+            <th>Last error</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var job in _jobs)
+        {
+            <tr>
+                <td>
+                    <a href="@($"/jobs/{job.Id}")"><code>@job.Id.ToString()[..8]</code></a>
+                </td>
+                <td>@job.JobType</td>
+                <td>@job.Attempts</td>
+                <td>@(job.CompletedAt?.ToString("HH:mm:ss") ?? "—")</td>
+                <td class="error-cell">@Truncate(job.LastError, 80)</td>
+                <td>
+                    <button class="link-btn" @onclick="() => RetryOne(job.Id)">Retry</button>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@if (_jobs.Count == 0)
+{
+    <p class="meta empty">DLQ is empty.</p>
+}
+
+@code {
+    private enum BulkScope { Visible, AllInDb }
+
+    private IReadOnlyList<Job> _jobs = Array.Empty<Job>();
+    private DateTime _capturedAt = DateTime.UtcNow;
+    private bool _bulkRunning;
+    private string? _bulkMessage;
+    private string _bulkMessageClass = "meta";
+    private BulkScope? _confirmingScope;
+
+    protected override void OnInitialized()
+    {
+        _jobs = Broadcaster.Latest.Jobs;
+        _capturedAt = Broadcaster.Latest.CapturedAt;
+        Broadcaster.OnDlqChanged += HandleUpdate;
+    }
+
+    private async void HandleUpdate(DlqSnapshot snapshot)
+    {
+        _jobs = snapshot.Jobs;
+        _capturedAt = snapshot.CapturedAt;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void ConfirmBulk(BulkScope scope)
+    {
+        _confirmingScope = scope;
+        _bulkMessage = null;
+    }
+
+    private void CancelConfirm() => _confirmingScope = null;
+
+    private async Task ExecuteBulk()
+    {
+        if (_confirmingScope is not { } scope) return;
+        var scopedTo = scope;
+        _confirmingScope = null;
+        _bulkRunning = true;
+        _bulkMessage = "Retrying…";
+        _bulkMessageClass = "meta";
+
+        try
+        {
+            var http = HttpFactory.CreateClient("forge-api");
+
+            // Visible scope: send explicit ids. AllInDb: send empty body.
+            var body = scopedTo == BulkScope.Visible
+                ? new { ids = _jobs.Select(j => j.Id).ToArray() }
+                : new { ids = Array.Empty<Guid>() };
+
+            var resp = await http.PostAsJsonAsync("/dlq/retry-all", body);
+
+            if (resp.IsSuccessStatusCode)
+            {
+                var result = await resp.Content.ReadFromJsonAsync<BulkResult>();
+                if (result is not null)
+                {
+                    _bulkMessage = result.Failed == 0
+                        ? $"Retried {result.Retried} of {result.Requested} job(s)."
+                        : $"Retried {result.Retried} of {result.Requested} job(s); {result.Failed} could not be retried.";
+                    _bulkMessageClass = result.Failed == 0 ? "meta success" : "meta error";
+                }
+                else
+                {
+                    _bulkMessage = "Retry submitted but response was empty.";
+                    _bulkMessageClass = "meta";
+                }
+            }
+            else
+            {
+                _bulkMessage = $"Bulk retry failed ({(int)resp.StatusCode}).";
+                _bulkMessageClass = "meta error";
+            }
+        }
+        catch (Exception ex)
+        {
+            _bulkMessage = $"Bulk retry failed: {ex.Message}";
+            _bulkMessageClass = "meta error";
+        }
+        finally
+        {
+            _bulkRunning = false;
+        }
+    }
+
+    private async Task RetryOne(Guid id)
+    {
+        try
+        {
+            var http = HttpFactory.CreateClient("forge-api");
+            var resp = await http.PostAsync($"/jobs/{id}/retry", content: null);
+            if (resp.IsSuccessStatusCode)
+            {
+                _bulkMessage = $"Retried {id.ToString()[..8]}.";
+                _bulkMessageClass = "meta success";
+            }
+            else
+            {
+                _bulkMessage = $"Retry failed for {id.ToString()[..8]} ({(int)resp.StatusCode}).";
+                _bulkMessageClass = "meta error";
+            }
+        }
+        catch (Exception ex)
+        {
+            _bulkMessage = $"Retry failed for {id.ToString()[..8]}: {ex.Message}";
+            _bulkMessageClass = "meta error";
+        }
+    }
+
+    private static string Truncate(string? s, int max) =>
+        string.IsNullOrEmpty(s) ? "—" : (s.Length <= max ? s : s[..max] + "…");
+
+    public void Dispose() => Broadcaster.OnDlqChanged -= HandleUpdate;
+
+    private sealed record BulkResult(int Requested, int Retried, int Failed, Guid[] FailedIds);
+}

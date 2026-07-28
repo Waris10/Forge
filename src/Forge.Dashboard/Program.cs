@@ -32,19 +32,37 @@ try
     builder.Services.AddSingleton<IConnectionMultiplexer>(
         _ => ConnectionMultiplexer.Connect(redisConnStr));
     builder.Services.AddSingleton<IJobReadStore, RedisJobReadStore>();
+    builder.Services.AddSingleton<IWorkerReadStore, RedisWorkerReadStore>();
+
 
     // Live broadcaster — singleton state + hosted service
     builder.Services.AddSingleton<LiveStateBroadcaster>();
     builder.Services.AddHostedService(sp => sp.GetRequiredService<LiveStateBroadcaster>());
+    builder.Services.AddSingleton<JobListBroadcaster>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<JobListBroadcaster>());
+    builder.Services.AddSingleton<DlqBroadcaster>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<DlqBroadcaster>());
+    builder.Services.AddSingleton<WorkersBroadcaster>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<WorkersBroadcaster>());
+
+    // HTTP client to the Forge API (for retry button etc).
+    builder.Services.AddHttpClient("forge-api", c =>
+    {
+        var apiBase = builder.Configuration["ForgeApi:BaseUrl"] ?? "http://localhost:5171";
+        c.BaseAddress = new Uri(apiBase);
+    });
 
     // Modern Blazor Web App: Razor Components + Interactive Server render mode
     builder.Services.AddRazorComponents()
-        .AddInteractiveServerComponents(); 
+        .AddInteractiveServerComponents();
+
+    DapperConfig.Configure();
 
     var app = builder.Build();
 
     app.UseStaticFiles();
     app.MapStaticAssets();
+
 
     app.UseRouting();
 

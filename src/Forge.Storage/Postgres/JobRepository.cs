@@ -236,33 +236,79 @@ public class JobRepository : IJobRepository
             cancellationToken: ct));
     }
 
+
     public async Task<IReadOnlyList<Job>> ListRecentAsync(
-    JobStatus? status,
-    int limit,
-    CancellationToken ct)
+      JobStatus? status,
+      int limit,
+      CancellationToken ct)
     {
         const string sqlAll = @"
-        SELECT id, job_type, status, attempts, created_at,
-               started_at, finished_at, duration_ms, last_error
+        SELECT id, job_type, payload::text AS payload, queue, priority, status,
+               attempts, max_attempts, last_error, idempotency_key,
+               scheduled_for, created_at, started_at, completed_at, duration_ms
         FROM jobs
         ORDER BY created_at DESC
-        LIMIT @limit";
+        LIMIT @Limit";
 
         const string sqlByStatus = @"
-        SELECT id, job_type, status, attempts, created_at,
-               started_at, finished_at, duration_ms, last_error
+        SELECT id, job_type, payload::text AS payload, queue, priority, status,
+               attempts, max_attempts, last_error, idempotency_key,
+               scheduled_for, created_at, started_at, completed_at, duration_ms
         FROM jobs
-        WHERE status = @status
+        WHERE status = @Status
         ORDER BY created_at DESC
-        LIMIT @limit";
+        LIMIT @Limit";
 
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync(ct);
 
         var rows = status is null
-            ? await conn.QueryAsync<Job>(sqlAll, new { limit })
-            : await conn.QueryAsync<Job>(sqlByStatus, new { status = status.ToString(), limit });
+            ? await conn.QueryAsync<JobRow>(new CommandDefinition(
+                sqlAll, new { Limit = limit }, cancellationToken: ct))
+            : await conn.QueryAsync<JobRow>(new CommandDefinition(
+                sqlByStatus,
+                new { Status = status.Value.ToString().ToLowerInvariant(), Limit = limit },
+                cancellationToken: ct));
 
-        return rows.ToList();
+        return rows.Select(r => r.ToJob()).ToList();
+    }
+
+
+    public async Task MarkForRetry(Guid id, CancellationToken ct)
+    {
+        const string sql = """
+    UPDATE jobs
+    SET status        = 'queued',
+        last_error    = NULL,
+        started_at    = NULL,
+        completed_at  = NULL,
+        duration_ms   = NULL,
+        scheduled_for = NULL,
+        max_attempts  = attempts + 1
+    WHERE id = @Id
+      AND status IN ('failed', 'dead')
+    """;
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            sql, new { Id = id }, cancellationToken: ct));
+    }
+
+    public async Task<IReadOnlyList<Guid>> ListDeadJobIdsAsync(CancellationToken ct)
+    {
+        const string sql = @"
+        SELECT id
+        FROM jobs
+        WHERE status = 'dead'
+        ORDER BY created_at DESC";
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync(ct);
+
+        var ids = await conn.QueryAsync<Guid>(new CommandDefinition(
+            sql, cancellationToken: ct));
+
+        return ids.ToList();
     }
 }

@@ -61,3 +61,145 @@
   background: #1f2937;
   color: #fff;
 }
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.card {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 1rem;
+  background: #fff;
+}
+.card h2 {
+  margin-top: 0;
+  font-size: 1rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.error-card {
+  border-color: #fecaca;
+  background: #fef2f2;
+  grid-column: 1 / -1;
+}
+.error-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  color: #991b1b;
+}
+.actions {
+  grid-column: 1 / -1;
+}
+.kv {
+  width: 100%;
+}
+.kv th {
+  text-align: left;
+  font-weight: 500;
+  color: #666;
+  width: 40%;
+  padding: 0.25rem 0;
+}
+.kv td {
+  padding: 0.25rem 0;
+}
+.payload {
+  background: #f5f5f5;
+  padding: 0.75rem;
+  border-radius: 3px;
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+.link-btn {
+  background: none;
+  border: none;
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.retry-btn {
+  padding: 0.5rem 1rem;
+  background: #dc2626;
+  color: white;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+.retry-btn:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+.meta.success {
+  color: #065f46;
+}
+.meta.error {
+  color: #991b1b;
+}
+.error {
+  color: #991b1b;
+}
+.dlq-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+.retry-btn.danger {
+  background: #991b1b;
+}
+.empty {
+  font-style: italic;
+  padding: 2rem;
+  text-align: center;
+}
+.error-cell {
+  max-width: 400px;
+  color: #991b1b;
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+.forge-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.forge-modal {
+  position: relative;
+  background: #fff;
+  color: #1f2937;
+  padding: 1.5rem;
+  border-radius: 6px;
+  max-width: 500px;
+  min-width: 300px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  z-index: 10000;
+}
+.forge-modal h3 {
+  margin-top: 0;
+}
+.forge-modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+.forge-modal-actions button {
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+  border: 1px solid #ccc;
+  background: #fff;
+  color: #1f2937;
+  border-radius: 3px;
+}

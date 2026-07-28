@@ -1,0 +1,89 @@
+@page "/workers"
+@rendermode InteractiveServer
+@using Forge.Dashboard.Live
+@using Forge.Storage.Redis
+@inject WorkersBroadcaster Broadcaster
+@implements IDisposable
+
+<h1>Workers</h1>
+
+<p class="meta">
+    @_workers.Count active worker@(_workers.Count == 1 ? "" : "s").
+    Last polled @_capturedAt.ToString("HH:mm:ss").
+</p>
+
+@if (_workers.Count == 0)
+{
+    <p class="meta empty">No active workers. Start one with <code>dotnet run --project src/Forge.Worker</code>.</p>
+}
+else
+{
+    <table class="jobs-table">
+        <thead>
+            <tr>
+                <th>Worker ID</th>
+                <th>Last heartbeat</th>
+                <th>Heartbeat expires in</th>
+                <th>Processing</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var w in _workers)
+            {
+                <tr>
+                    <td><code>@w.WorkerId</code></td>
+                    <td>@FormatLastHeartbeat(w.HeartbeatTtl)</td>
+                    <td>@FormatRemaining(w.HeartbeatTtl)</td>
+                    <td>@w.ProcessingCount</td>
+                    <td>@HealthBadge(w.HeartbeatTtl)</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private static readonly TimeSpan HeartbeatTtlMax = TimeSpan.FromSeconds(30);
+
+    private IReadOnlyList<WorkerSnapshot> _workers = Array.Empty<WorkerSnapshot>();
+    private DateTime _capturedAt = DateTime.UtcNow;
+
+    protected override void OnInitialized()
+    {
+        _workers = Broadcaster.Latest.Workers;
+        _capturedAt = Broadcaster.Latest.CapturedAt;
+        Broadcaster.OnWorkersChanged += HandleUpdate;
+    }
+
+    private async void HandleUpdate(WorkersSnapshot snapshot)
+    {
+        _workers = snapshot.Workers;
+        _capturedAt = snapshot.CapturedAt;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static string FormatLastHeartbeat(TimeSpan remaining)
+    {
+        var elapsed = HeartbeatTtlMax - remaining;
+        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+        return elapsed.TotalSeconds < 1
+            ? "just now"
+            : $"{(int)elapsed.TotalSeconds}s ago";
+    }
+
+    private static string FormatRemaining(TimeSpan remaining) =>
+        remaining.TotalSeconds < 1
+            ? "<1s"
+            : $"{(int)remaining.TotalSeconds}s";
+
+    private static MarkupString HealthBadge(TimeSpan remaining)
+    {
+        if (remaining > HeartbeatTtlMax / 2)
+            return new MarkupString("<span class=\"status status-succeeded\">healthy</span>");
+
+        return new MarkupString("<span class=\"status status-failed\">at risk</span>");
+    }
+
+    public void Dispose() => Broadcaster.OnWorkersChanged -= HandleUpdate;
+}

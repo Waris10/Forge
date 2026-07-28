@@ -1,6 +1,248 @@
 ﻿@page "/jobs/{Id:guid}"
 @rendermode InteractiveServer
-<h1>Job @Id</h1>
+@using System.Net.Http.Json
+@using System.Text.Json
+@using Forge.Core
+@using Forge.Storage.Postgres
+@using Forge.Storage.Redis
+@using Forge.Dashboard
+@using Microsoft.Extensions.Options
+@inject IServiceScopeFactory ScopeFactory
+@inject IJobReadStore ReadStore
+@inject IHttpClientFactory HttpFactory
+@inject IOptions<DashboardOptions> Options
+@inject NavigationManager Nav
+
+<h1>Job @ShortId(Id)</h1>
+
+@if (_loading)
+{
+    <p>Loading…</p>
+}
+else if (_job is null)
+{
+    <p class="error">Job not found. <a href="/jobs">Back to list</a></p>
+}
+else
+{
+    <div class="detail-grid">
+        <section class="card">
+            <h2>Status</h2>
+            <table class="kv">
+                <tr><th>ID</th><td><code>@_job.Id</code></td></tr>
+                <tr><th>Type</th><td>@_job.JobType</td></tr>
+                <tr><th>Status</th><td><span class="status status-@(_job.Status.ToString().ToLower())">@_job.Status</span></td></tr>
+                <tr><th>Queue</th><td>@_job.Queue</td></tr>
+                <tr><th>Priority</th><td>@_job.Priority</td></tr>
+                <tr><th>Attempts</th><td>@_job.Attempts / @_job.MaxAttempts</td></tr>
+                @if (_live?.RequeueCount > 0)
+                {
+                    <tr><th>Requeues</th><td>@_live.RequeueCount (janitor recoveries)</td></tr>
+                }
+            </table>
+        </section>
+
+        <section class="card">
+            <h2>Timeline</h2>
+            <table class="kv">
+                <tr><th>Created</th><td>@Fmt(_job.CreatedAt)</td></tr>
+                @if (_job.ScheduledFor is not null)
+                {
+                    <tr><th>Scheduled for</th><td>@Fmt(_job.ScheduledFor.Value)</td></tr>
+                }
+                @if (_job.StartedAt is not null)
+                {
+                    <tr><th>Started</th><td>@Fmt(_job.StartedAt.Value)</td></tr>
+                }
+                @if (_job.CompletedAt is not null)
+                {
+                    <tr><th>Completed</th><td>@Fmt(_job.CompletedAt.Value)</td></tr>
+                }
+                @if (_job.DurationMs is not null)
+                {
+                    <tr><th>Duration</th><td>@_job.DurationMs ms</td></tr>
+                }
+            </table>
+        </section>
+
+        @if (_job.LastError is not null)
+        {
+            <section class="card error-card">
+                <h2>Last Error</h2>
+                <pre class="error-text">@_job.LastError</pre>
+            </section>
+        }
+
+        <section class="card">
+            <h2>
+                Payload
+                <button class="link-btn" @onclick="() => _payloadOpen = !_payloadOpen">
+                    @(_payloadOpen ? "Hide" : "Show")
+                </button>
+            </h2>
+            @if (_payloadOpen)
+            {
+                <pre class="payload">@PrettyPayload</pre>
+            }
+        </section>
+
+        <section class="card">
+            <h2>Observability</h2>
+            @if (_live?.Traceparent is { } tp && TryExtractTraceId(tp, out var traceId))
+            {
+                <p>
+                    <a href="@($"{Options.Value.JaegerBaseUrl}/trace/{traceId}")"
+                       target="_blank" rel="noopener">
+                        Open trace in Jaeger →
+                    </a>
+                </p>
+                <p class="meta">Traceparent: <code>@tp</code></p>
+            }
+            else
+            {
+                <p class="meta">No trace recorded for this job.</p>
+            }
+        </section>
+
+        @if (CanRetry)
+        {
+            <section class="card actions">
+                <h2>Actions</h2>
+                <button class="retry-btn"
+                        @onclick="HandleRetry"
+                        disabled="@_retrying">
+                    @(_retrying ? "Retrying…" : "Retry")
+                </button>
+                @if (_retryMessage is not null)
+                {
+                    <p class="@_retryMessageClass">@_retryMessage</p>
+                }
+                <p class="meta">
+                    Retry resets the row to <code>queued</code>, clears the error,
+                    and bumps <code>max_attempts</code> to <code>attempts + 1</code>
+                    so the worker has a fresh attempt.
+                </p>
+            </section>
+        }
+    </div>
+}
+
 @code {
     [Parameter] public Guid Id { get; set; }
+
+    private bool _loading = true;
+    private Job? _job;
+    private JobLiveSnapshot? _live;
+    private bool _payloadOpen;
+    private bool _retrying;
+    private string? _retryMessage;
+    private string _retryMessageClass = "meta";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Re-fetch when the route id changes (post-retry navigation, etc).
+        _loading = true;
+        _job = null;
+        _live = null;
+        _retryMessage = null;
+        await LoadAsync();
+        _loading = false;
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var repo = scope.ServiceProvider.GetRequiredService<IJobRepository>();
+            _job = await repo.Get(Id, CancellationToken.None);
+        }
+        catch
+        {
+            _job = null;
+        }
+
+        try
+        {
+            _live = await ReadStore.GetJobLiveAsync(Id, CancellationToken.None);
+        }
+        catch
+        {
+            _live = null;
+        }
+    }
+
+    private bool CanRetry =>
+        _job is not null &&
+        (_job.Status == JobStatus.Failed || _job.Status == JobStatus.Dead);
+
+    private async Task HandleRetry()
+    {
+        if (_job is null) return;
+        _retrying = true;
+        _retryMessage = null;
+
+        try
+        {
+            var http = HttpFactory.CreateClient("forge-api");
+            var resp = await http.PostAsync($"/jobs/{Id}/retry", content: null);
+
+            if (resp.IsSuccessStatusCode)
+            {
+                _retryMessage = "Retry submitted — job re-queued.";
+                _retryMessageClass = "meta success";
+                await LoadAsync();   // refresh the row to show status = queued
+            }
+            else
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                _retryMessage = $"Retry failed ({(int)resp.StatusCode}): {body}";
+                _retryMessageClass = "meta error";
+            }
+        }
+        catch (Exception ex)
+        {
+            _retryMessage = $"Retry failed: {ex.Message}";
+            _retryMessageClass = "meta error";
+        }
+        finally
+        {
+            _retrying = false;
+        }
+    }
+
+    private string PrettyPayload
+    {
+        get
+        {
+            if (_job is null) return "";
+            try
+            {
+                return JsonSerializer.Serialize(
+                    _job.Payload,
+                    new JsonSerializerOptions { WriteIndented = true });
+            }
+            catch
+            {
+                return _job.Payload.GetRawText();
+            }
+        }
+    }
+
+    private static string ShortId(Guid id) => id.ToString()[..8];
+
+    private static string Fmt(DateTimeOffset dt) =>
+        dt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+
+    /// <summary>
+    /// W3C traceparent is "00-{traceId}-{spanId}-{flags}". Extract traceId.
+    /// </summary>
+    private static bool TryExtractTraceId(string traceparent, out string traceId)
+    {
+        traceId = "";
+        var parts = traceparent.Split('-');
+        if (parts.Length < 3) return false;
+        traceId = parts[1];
+        return !string.IsNullOrEmpty(traceId);
+    }
 }
