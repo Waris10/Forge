@@ -1,0 +1,145 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using Forge.Core
+@using Forge.Dashboard.Live
+@inject OverviewBroadcaster Broadcaster
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<h1>Overview</h1>
+
+<div class="forge-overview-gauges">
+    <div class="forge-gauge">
+        <span class="forge-gauge-value">@_counters.ReadyDepth</span>
+        <span class="forge-gauge-label">Ready</span>
+    </div>
+    <div class="forge-gauge">
+        <span class="forge-gauge-value">@_counters.ScheduledDepth</span>
+        <span class="forge-gauge-label">Scheduled</span>
+    </div>
+    <div class="forge-gauge">
+        <span class="forge-gauge-value forge-gauge-dlq">@_counters.DlqDepth</span>
+        <span class="forge-gauge-label">DLQ</span>
+    </div>
+    <div class="forge-gauge">
+        <span class="forge-gauge-value">@_counters.WorkersAlive</span>
+        <span class="forge-gauge-label">Workers</span>
+    </div>
+</div>
+
+<section class="forge-chart-section">
+    <h2>Throughput <span class="meta">(last 5 minutes)</span></h2>
+    <div class="forge-chart-container">
+        <canvas id="throughputChart"></canvas>
+    </div>
+</section>
+
+<section class="forge-failures-section">
+    <h2>Recent failures</h2>
+    @if (_failures.Count == 0)
+    {
+        <p class="meta">No recent failures.</p>
+    }
+    else
+    {
+        <table class="jobs-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Error</th>
+                    <th>When</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var job in _failures)
+                {
+                    <tr class="row-clickable" @onclick="@(() => Nav.NavigateTo($"/jobs/{job.Id}"))">
+                        <td><code>@job.Id.ToString()[..8]</code></td>
+                        <td>@job.JobType</td>
+                        <td><span class="status status-@(job.Status.ToString().ToLower())">@job.Status</span></td>
+                        <td class="error-cell">@Truncate(job.LastError, 60)</td>
+                        <td>@(job.CompletedAt?.ToLocalTime().ToString("HH:mm:ss") ?? "—")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+<p class="meta">Last updated @_capturedAt.ToString("HH:mm:ss").</p>
+
+@code {
+    private LiveCounters _counters = new(0, 0, 0, 0, DateTime.UtcNow);
+    private IReadOnlyList<ThroughputBucket> _throughput = Array.Empty<ThroughputBucket>();
+    private IReadOnlyList<Job> _failures = Array.Empty<Job>();
+    private DateTime _capturedAt = DateTime.UtcNow;
+    private bool _chartInitialized;
+
+    protected override void OnInitialized()
+    {
+        var snapshot = Broadcaster.Latest;
+        _counters = snapshot.Counters;
+        _throughput = snapshot.Throughput;
+        _failures = snapshot.RecentFailures;
+        _capturedAt = snapshot.CapturedAt;
+        Broadcaster.OnOverviewChanged += HandleUpdate;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Chart.js needs the canvas to exist in the DOM, which only
+            // happens after the first render. Initialize once, then push
+            // data on every subsequent update.
+            await JS.InvokeVoidAsync("ThroughputChart.init", "throughputChart");
+            _chartInitialized = true;
+            await PushChartData();
+        }
+    }
+
+    private async void HandleUpdate(OverviewSnapshot snapshot)
+    {
+        _counters = snapshot.Counters;
+        _throughput = snapshot.Throughput;
+        _failures = snapshot.RecentFailures;
+        _capturedAt = snapshot.CapturedAt;
+
+        await InvokeAsync(async () =>
+        {
+            StateHasChanged();
+            if (_chartInitialized)
+                await PushChartData();
+        });
+    }
+
+    private async Task PushChartData()
+    {
+        if (_throughput.Count == 0) return;
+
+        var labels = _throughput
+            .Select(b => b.BucketStart.ToLocalTime().ToString("HH:mm:ss"))
+            .ToArray();
+        var succeeded = _throughput.Select(b => b.Succeeded).ToArray();
+        var failed = _throughput.Select(b => b.Failed).ToArray();
+        var dead = _throughput.Select(b => b.Dead).ToArray();
+
+        await JS.InvokeVoidAsync("ThroughputChart.update", labels, succeeded, failed, dead);
+    }
+
+    private static string Truncate(string? s, int max) =>
+        string.IsNullOrEmpty(s) ? "—" : (s.Length <= max ? s : s[..max] + "…");
+
+    public async ValueTask DisposeAsync()
+    {
+        Broadcaster.OnOverviewChanged -= HandleUpdate;
+        if (_chartInitialized)
+        {
+            try { await JS.InvokeVoidAsync("ThroughputChart.destroy"); }
+            catch (JSDisconnectedException) { /* circuit already gone */ }
+        }
+    }
+}

@@ -36,8 +36,8 @@ try
 
 
     // Live broadcaster — singleton state + hosted service
-    builder.Services.AddSingleton<LiveStateBroadcaster>();
-    builder.Services.AddHostedService(sp => sp.GetRequiredService<LiveStateBroadcaster>());
+    builder.Services.AddSingleton<OverviewBroadcaster>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<OverviewBroadcaster>());
     builder.Services.AddSingleton<JobListBroadcaster>();
     builder.Services.AddHostedService(sp => sp.GetRequiredService<JobListBroadcaster>());
     builder.Services.AddSingleton<DlqBroadcaster>();
@@ -55,6 +55,7 @@ try
     // Modern Blazor Web App: Razor Components + Interactive Server render mode
     builder.Services.AddRazorComponents()
         .AddInteractiveServerComponents();
+  
 
     DapperConfig.Configure();
 
@@ -81,7 +82,7 @@ try
 
     // Front door — / redirects to /ops so the dashboard has a sensible
     // landing page instead of a 404.
-    app.MapGet("/", () => Results.Redirect("/ops"));
+    //app.MapGet("/", () => Results.Redirect("/ops"));
 
     app.Run();
 }

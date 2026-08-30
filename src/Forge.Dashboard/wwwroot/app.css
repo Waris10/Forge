@@ -203,3 +203,67 @@
   color: #1f2937;
   border-radius: 3px;
 }
+
+
+/* Overview gauges */
+.forge-overview-gauges {
+    display: flex;
+    gap: 1rem;
+    margin: 1rem 0;
+}
+
+.forge-gauge {
+    flex: 1;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 1rem;
+    text-align: center;
+    background: #fff;
+}
+
+.forge-gauge-value {
+    display: block;
+    font-size: 2rem;
+    font-weight: 700;
+    color: #1f2937;
+}
+
+.forge-gauge-dlq {
+    color: #991b1b;
+}
+
+.forge-gauge-label {
+    display: block;
+    font-size: 0.85rem;
+    color: #666;
+    margin-top: 0.25rem;
+}
+
+/* Throughput chart */
+.forge-chart-section {
+    margin: 2rem 0;
+}
+
+    .forge-chart-section h2 {
+        font-size: 1.1rem;
+        margin-bottom: 0.5rem;
+    }
+
+.forge-chart-container {
+    position: relative;
+    height: 280px;
+    border: 1px solid #eee;
+    border-radius: 6px;
+    padding: 0.5rem;
+    background: #fff;
+}
+
+/* Recent failures */
+.forge-failures-section {
+    margin: 2rem 0;
+}
+
+    .forge-failures-section h2 {
+        font-size: 1.1rem;
+        margin-bottom: 0.5rem;
+    }

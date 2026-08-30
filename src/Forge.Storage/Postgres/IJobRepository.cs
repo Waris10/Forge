@@ -65,4 +65,11 @@ public interface IJobRepository
     Task MarkForRetry(Guid id, CancellationToken ct);
 
     Task<IReadOnlyList<Guid>> ListDeadJobIdsAsync(CancellationToken ct);
+
+    Task<IReadOnlyList<ThroughputBucket>> GetThroughputAsync(
+    TimeSpan window,
+    int bucketSeconds,
+    CancellationToken ct);
+
+    Task<IReadOnlyList<Job>> ListRecentFailuresAsync(int limit, CancellationToken ct);
 }
