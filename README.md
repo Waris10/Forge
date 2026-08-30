@@ -1,5 +1,7 @@
 # Forge
 
+[![CI](https://github.com/Waris10/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/Waris10/forge/actions/workflows/ci.yml)
+
 Forge is a distributed background job queue built on .NET 10, Postgres, and Redis. It's the kind of system that sits behind a web app to run work asynchronously — send an email, resize an image, call a flaky third-party API — with at-least-once delivery, automatic retries with backoff, dead-letter handling, dead-worker recovery, and a live operations dashboard.
 
 It's split into small single-purpose services rather than one monolith, so each concern (accepting jobs, running jobs, scheduling delayed jobs, recovering from crashes, observing the system) can be reasoned about, scaled, and restarted independently.
