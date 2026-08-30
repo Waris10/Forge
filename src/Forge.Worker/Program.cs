@@ -3,6 +3,7 @@ using Forge.Storage.Postgres;
 using Forge.Storage.Redis;
 using Forge.Worker;
 using Forge.Worker.Handlers;
+using Microsoft.Extensions.Options;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Prometheus;
@@ -121,7 +122,9 @@ builder.Services.Configure<HostOptions>(opts =>
 // Expose Prometheus metrics on a side port. The worker isn't a web host,
 // so we use Kestrel-backed standalone metrics server. Port 9101 is a
 // convention (9090 is Prometheus itself; 91xx is custom apps).
-builder.Services.AddSingleton(new KestrelMetricServer(port: 9101));
+//builder.Services.AddSingleton(new KestrelMetricServer(port: 9101));
+builder.Services.AddSingleton(sp =>
+    new KestrelMetricServer(port: sp.GetRequiredService<IOptions<WorkerOptions>>().Value.MetricsPort));
 
 var host = builder.Build();
 host.Run();

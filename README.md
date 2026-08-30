@@ -13,6 +13,7 @@ It's split into small single-purpose services rather than one monolith, so each 
 - **W3C trace propagation across the queue boundary** — the `traceparent` is stamped onto the job's Redis hash at enqueue and rehydrated at pickup, so a single Jaeger trace spans HTTP API submit → Redis wait → worker execute.
 - **Two independent retry counters** — application-level `attempts` (per-job retry budget) and system-level `requeue_count` (poison-pill protection against handlers that crash the worker process itself).
 - **Hybrid broadcaster pattern** in the dashboard: one shared poller per resource fans out to all connected browser tabs via SignalR, so N viewers cost the same in Postgres/Redis as one.
+- **Per-queue worker pools** via env var overrides — each worker process listens on one named queue, scales independently, and attaches to any process supervisor. Adding a new queue requires no code changes, just a new worker pointed at it.
 
 ## Architecture
 
@@ -140,7 +141,18 @@ FORGE_API=http://localhost:5171 bash scripts/seed.sh
 
 Open the dashboard at `http://localhost:5200` — the overview page shows the top-line gauges, with `/jobs`, `/dlq`, and `/workers` in the nav.
 
-Run multiple `Forge.Worker` instances (and even multiple `Forge.Scheduler` / `Forge.Janitor` instances) side by side — the Redis distributed lock in `Forge.Scheduler` and `Forge.Janitor` ensures only one instance of each acts as leader at a time, so they're safe to scale horizontally without duplicating work.
+**Running multiple workers:** each worker is configured by three env vars. Start as many as you need, each on a different port and with a different ID:
+
+```bash
+# Default queue — two workers
+dotnet run --project src/Forge.Worker --no-build
+Worker__MetricsPort=9102 Worker__WorkerId=worker-2 dotnet run --project src/Forge.Worker --no-build
+
+# Dedicated pool for a named queue (e.g. email)
+Worker__Queue=email Worker__WorkerId=worker-email Worker__MetricsPort=9111 dotnet run --project src/Forge.Worker --no-build
+```
+
+Multiple `Forge.Scheduler` and `Forge.Janitor` instances are also safe — the Redis distributed lock ensures only one acts as leader at a time.
 
 ## Configuration
 
@@ -154,7 +166,8 @@ Each service reads `ConnectionStrings:Postgres` and `ConnectionStrings:Redis` fr
   },
   "Worker": {
     "Queue": "default",
-    "PullTimeout": "00:00:05"
+    "PullTimeout": "00:00:05",
+    "MetricsPort": 9101
   }
 }
 ```
@@ -202,12 +215,26 @@ Each page is backed by a dedicated `*Broadcaster` hosted service (in [`Live/`](s
 
 `scripts/seed.sh` submits a realistic mix of all three, plus delayed and unknown-type jobs, against a running API.
 
+## Benchmarks
+
+Measured on a Windows dev machine (WSL2 + Docker Desktop, .NET 10 Release build, Postgres and Redis running in Docker containers).
+
+| Scenario        | Workers            | Jobs   | Throughput   | Notes                              |
+| --------------- | ------------------ | ------ | ------------ | ---------------------------------- |
+| NoOp handlers   | 1 (real process)   | 10,000 | ~11 jobs/sec | Dev machine, Docker on WSL2        |
+| NoOp handlers   | 2 (real processes) | 10,000 | ~17 jobs/sec | 1.5x scaling — see bottleneck note |
+| Chaos test (CI) | 3 (simulated)      | 1,000  | All terminal | Succeeded: 1000, Dead: 0           |
+
+**Bottleneck: Postgres write latency.** Each job requires 3 Postgres round trips — INSERT on submit, UPDATE on pickup (`MarkRunning`), UPDATE on completion (`MarkSucceeded`). Redis queue operations (`BLMOVE`, `LREM`, `HSET`) are sub-millisecond and are not the constraint. The 2-worker result shows ~1.5x throughput rather than 2x because both workers share the same Postgres instance; on a server with Postgres co-located with the workers, throughput would be significantly higher.
+
+**Chaos resilience:** 1,000 jobs submitted, 3 workers running, 1 killed mid-run without acking in-flight jobs. The janitor recovered all orphaned jobs. Final state: Succeeded: 1,000, Dead: 0. This test runs automatically in CI on every push.
+
 ## Design notes
 
 - **Postgres is the source of truth; Redis is the live queue.** Every job write is Postgres-first, then Redis. If Redis is unavailable the job exists in Postgres but nothing sees it on the queue side — a background reconciler could sweep for such orphans, but it's a known corner rather than something the current build handles.
 - **At-least-once, not exactly-once.** The `BLMOVE`-into-processing-list pattern combined with janitor recovery means a crashed worker's in-flight job will run again on another worker. Handlers must be idempotent.
 - **Manual retry preserves the row, not the audit trail.** `POST /jobs/{id}/retry` resets the existing row's status to `queued` and bumps `max_attempts` by one — same identity, same audit position, but the previous trace/last_error is overwritten by the retried execution. This matches Laravel's `queue:retry` semantics; the tradeoff is that pre-retry state isn't preserved without external logging.
-- **Same-host worker scaling only right now.** Multiple worker processes on one machine work fine, but each worker's Prometheus metrics port is hardcoded — running two workers side-by-side on the same host needs a small config change (deferred alongside multi-instance benchmarks).
+- **Per-queue worker pools** are supported today via env var overrides (`Worker__Queue=email`, `Worker__WorkerId=worker-email-1`, `Worker__MetricsPort=9111`) — each process listens on one queue. Different pools can run different handler sets, scale independently, and attach to any process supervisor. The routing is handled by Redis lists (`forge:queue:{name}`), so adding a new queue requires no code changes — just start a worker pointed at it.
 
 ## Tech stack
 
@@ -225,8 +252,9 @@ src/
   Forge.Janitor/     Dead-worker recovery (singleton, Redis-locked)
   Forge.Dashboard/   Blazor Server live operations UI
 deploy/              Prometheus + Grafana provisioning
-scripts/seed.sh      Seeds realistic test data via the API
+scripts/             seed.sh + benchmark.sh
 docs/screenshots/    Images referenced from this README
+tests/               xUnit unit + integration tests (Testcontainers)
 ```
 
 ## Roadmap
@@ -240,5 +268,6 @@ Built milestone by milestone, each a working end-to-end increment:
 5. Janitor and reliability (heartbeats, dead-worker recovery, poison pills)
 6. Observability (structured logs, Prometheus metrics, Grafana, distributed tracing)
 7. Live dashboard (Blazor Server, hybrid broadcaster pattern, DLQ bulk retry, worker health)
+8. Ship — integration tests (Testcontainers), CI (GitHub Actions), benchmarks, multi-worker scaling
 
-Ahead: throughput benchmarks and multi-worker scaling (M8), a proper migration runner, per-queue priority tiers, and per-tenant isolation for a hosted-multi-tenant story.
+Ahead: a proper migration runner, per-queue priority tiers, LISTEN/NOTIFY for zero-lag dashboard updates, and per-tenant isolation for a hosted-multi-tenant story.

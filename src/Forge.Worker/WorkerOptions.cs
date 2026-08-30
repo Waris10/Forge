@@ -56,4 +56,6 @@ public class WorkerOptions
     /// trips on idle queues. 5 seconds is the spec's pick and a good default.
     /// </summary>
     public TimeSpan PullTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    public int MetricsPort { get; set; } = 9101;
 }
