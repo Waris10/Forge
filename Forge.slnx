@@ -8,4 +8,7 @@
     <Project Path="src/Forge.Storage/Forge.Storage.csproj" />
     <Project Path="src/Forge.Worker/Forge.Worker.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Forge.Tests/Forge.Tests.csproj" />
+  </Folder>
 </Solution>

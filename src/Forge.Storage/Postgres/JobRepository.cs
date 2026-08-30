@@ -325,30 +325,30 @@ public class JobRepository : IJobRepository
         // date_trunc doesn't support arbitrary intervals, so we do
         // the math in epoch seconds.
         const string sql = @"
-        WITH buckets AS (
-            SELECT generate_series(
-                to_timestamp(extract(epoch FROM now())::bigint / @bs * @bs - @windowSec + @bs),
-                to_timestamp(extract(epoch FROM now())::bigint / @bs * @bs),
-                make_interval(secs => @bs)
-            ) AS bucket_start
-        ),
-        job_buckets AS (
+            WITH buckets AS (
+                SELECT generate_series(
+                    to_timestamp(extract(epoch FROM now())::bigint / @bs * @bs - @windowSec + @bs),
+                    to_timestamp(extract(epoch FROM now())::bigint / @bs * @bs),
+                    make_interval(secs => @bs)
+                ) AS bucket_start
+            ),
+            job_buckets AS (
+                SELECT
+                    to_timestamp(extract(epoch FROM completed_at)::bigint / @bs * @bs) AS bucket_start,
+                    status
+                FROM jobs
+                WHERE completed_at >= now() - make_interval(secs => @windowSec)
+                  AND status IN ('succeeded', 'failed', 'dead')
+            )
             SELECT
-                to_timestamp(extract(epoch FROM completed_at)::bigint / @bs * @bs) AS bucket_start,
-                status
-            FROM jobs
-            WHERE completed_at >= now() - make_interval(secs => @windowSec)
-              AND status IN ('succeeded', 'failed', 'dead')
-        )
-        SELECT
-            b.bucket_start AS BucketStart,
-            COALESCE(SUM(CASE WHEN j.status = 'succeeded' THEN 1 END), 0) AS Succeeded,
-            COALESCE(SUM(CASE WHEN j.status = 'failed' THEN 1 END), 0) AS Failed,
-            COALESCE(SUM(CASE WHEN j.status = 'dead' THEN 1 END), 0) AS Dead
-        FROM buckets b
-        LEFT JOIN job_buckets j ON j.bucket_start = b.bucket_start
-        GROUP BY b.bucket_start
-        ORDER BY b.bucket_start";
+                b.bucket_start AS BucketStart,
+                COALESCE(SUM(CASE WHEN j.status = 'succeeded' THEN 1 END), 0) AS Succeeded,
+                COALESCE(SUM(CASE WHEN j.status = 'failed' THEN 1 END), 0) AS Failed,
+                COALESCE(SUM(CASE WHEN j.status = 'dead' THEN 1 END), 0) AS Dead
+            FROM buckets b
+            LEFT JOIN job_buckets j ON j.bucket_start = b.bucket_start
+            GROUP BY b.bucket_start
+            ORDER BY b.bucket_start";
 
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync(ct);
